@@ -540,7 +540,7 @@ module "guardduty_<aggregation_region>" {
   member_accounts            = local.member_accounts
   is_aggregation_region      = true
   management_account_id      = local.management_account_id
-  providers                  = { aws = aws.<aggregation_region> }
+  providers                  = { aws = aws }  # Default provider (aggregation region)
 }
 
 # Other regions (non-aggregation)
@@ -649,6 +649,9 @@ resource "aws_chatbot_slack_channel_configuration" "guardduty" {
 
 6. **AWS Chatbot Slack workspace integration requires manual setup**
    - Terraform can manage `aws_chatbot_slack_channel_configuration` for channel settings, but the workspace integration itself must be configured in the AWS Chatbot console beforehand.
+
+7. **`management_account_id` and `delegated_admin_account_id` must match in this spec**
+   - This specification assumes the management account serves as the delegated administrator, so both values should be identical. The EventBridge bus policy references `management_account_id` — if it differs from the delegated admin account, cross-region forwarding will break.
 
 ### Terraform Implementation
 
