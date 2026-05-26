@@ -1,16 +1,18 @@
 # terraform-aws-recipes
 
-AWS 環境における Terraform 構築レシピ集です。
+A collection of Terraform recipes for AWS environments.
+
+[日本語版はこちら](README.ja.md)
 
 ## Recipes
 
-| レシピ | カテゴリ | 概要 |
+| Recipe | Category | Description |
 |---|---|---|
-| [GuardDuty 全リージョン一元管理](guardduty-multiregion-setup.md) | Security | GuardDuty を全リージョンで有効化し、単一 Terraform ワークスペースから管理。MEDIUM+ Finding のメール通知付き |
+| [GuardDuty Multi-Region Management](guardduty-multiregion-setup.md) | Security | Enable GuardDuty across all regions, managed from a single Terraform workspace. Includes email notifications for MEDIUM+ findings. |
 
-## 使い方
+## Usage
 
-各レシピは AI アシスタントへの構築プロンプトとして使えます。前提条件のパラメータを埋めてプロンプトとして渡すことで、Terraform コードを生成できます。
+Each recipe is designed as a construction prompt for AI assistants. Fill in the prerequisite parameters and pass it as a prompt to generate Terraform code.
 
 ## License
 
