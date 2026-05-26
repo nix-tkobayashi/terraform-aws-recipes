@@ -4,7 +4,7 @@
 
 ## Overview
 
-Build a configuration that enables GuardDuty across target regions within an AWS Organizations environment, managed from a single Terraform workspace (management environment). Findings of MEDIUM severity or higher are delivered via email notifications.
+Build a configuration that enables GuardDuty across target regions within an AWS Organizations environment, managed from a single Terraform workspace (management environment). Findings of MEDIUM severity or higher are aggregated to a central region and delivered to Slack via AWS Chatbot.
 
 ### Terminology
 
@@ -29,9 +29,14 @@ Confirm or provide the following information before starting:
 | **Member account list** | Map format: `{ "account_id" = "root_email" }` |
 | **Target regions** | Regions where GuardDuty will be enabled (define per project; see sample below) |
 | **Aggregation region** | Region where EventBridge / SNS notifications are aggregated (e.g., `ap-northeast-1`) |
-| **Notification email** | Email address for GuardDuty Finding notifications |
+| **Slack workspace ID** | Slack workspace ID for AWS Chatbot integration |
+| **Slack channel ID** | Slack channel ID for GuardDuty Finding notifications |
 | **Terraform backend** | S3 bucket name, key, and region |
 | **Existing Detector IDs** | If GuardDuty is already enabled in a region, its Detector ID (`aws guardduty list-detectors --region <region>`) |
+
+### Preparation
+
+- Configure the Slack workspace integration in the AWS Chatbot console beforehand (Terraform cannot manage the workspace connection itself)
 
 ### Cost Considerations
 
@@ -46,10 +51,10 @@ terraform/
 ├── env/management/                             # Single tfstate managing all regions
 │   ├── backend.tf                              # Provider aliases + S3 backend
 │   ├── locals.tf                               # project / environment / account IDs / regions
-│   ├── guardduty.tf                            # import + module calls + outputs
-│   ├── guardduty-notifications.tf              # EventBridge aggregation → SNS → Email
+│   ├── guardduty.tf                            # Module calls + outputs
+│   ├── chatbot.tf                              # AWS Chatbot Slack integration
 │
-└── modules/management/guardduty-region/         # GuardDuty configuration for one region
+└── modules/management/guardduty-region/         # GuardDuty config for one region + notification aggregation
     ├── main.tf
     ├── variables.tf
     ├── outputs.tf
@@ -62,7 +67,7 @@ terraform/
 
 ### Step 1: modules/management/guardduty-region/ — Shared Module
 
-Encapsulate per-region GuardDuty configuration into a module. This module is called once per target region to deploy identical settings across all regions.
+Encapsulate per-region GuardDuty configuration into a module. This module also includes notification aggregation (SNS / EventBridge) and cross-region forwarding functionality, controlled by the `is_aggregation_region` / `enable_finding_forwarding` variables.
 
 #### variables.tf
 
@@ -76,6 +81,36 @@ variable "member_accounts" {
   description = "GuardDuty member accounts (key: account_id, value: root email)"
   type        = map(string)
   default     = {}
+}
+
+variable "is_aggregation_region" {
+  description = "Whether this region is the notification aggregation region. Creates SNS Topic, Custom EventBus, and EventBridge rules."
+  type        = bool
+  default     = false
+}
+
+variable "management_account_id" {
+  description = "AWS account ID for the management account. Required when is_aggregation_region is true."
+  type        = string
+  default     = ""
+}
+
+variable "enable_finding_forwarding" {
+  description = "Whether to create EventBridge forwarding rule to the aggregation region. Set to true for non-aggregation regions."
+  type        = bool
+  default     = false
+}
+
+variable "forwarding_event_bus_arn" {
+  description = "Custom Event Bus ARN in the aggregation region. Required when enable_finding_forwarding is true."
+  type        = string
+  default     = ""
+}
+
+variable "forwarding_role_arn" {
+  description = "IAM Role ARN for cross-region EventBridge forwarding. Required when enable_finding_forwarding is true."
+  type        = string
+  default     = ""
 }
 ```
 
@@ -144,6 +179,190 @@ resource "aws_guardduty_organization_configuration" "this" {
 #     additional: ECS_FARGATE_AGENT_MANAGEMENT = "ALL"
 #     additional: EC2_AGENT_MANAGEMENT = "NONE"
 #     additional: EKS_ADDON_MANAGEMENT = "NONE"
+
+# =============================================================================
+# Notification aggregation (aggregation region only)
+# =============================================================================
+
+# --- SNS Topic ---
+resource "aws_sns_topic" "guardduty_findings" {
+  count = var.is_aggregation_region ? 1 : 0
+  name  = "guardduty-findings"
+}
+
+resource "aws_sns_topic_policy" "guardduty_findings" {
+  count = var.is_aggregation_region ? 1 : 0
+  arn   = aws_sns_topic.guardduty_findings[0].arn
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "AllowEventBridgePublish"
+        Effect    = "Allow"
+        Principal = { Service = "events.amazonaws.com" }
+        Action    = "sns:Publish"
+        Resource  = aws_sns_topic.guardduty_findings[0].arn
+      }
+    ]
+  })
+}
+
+# --- Custom Event Bus ---
+resource "aws_cloudwatch_event_bus" "guardduty_findings" {
+  count = var.is_aggregation_region ? 1 : 0
+  name  = "guardduty-findings"
+}
+
+resource "aws_cloudwatch_event_bus_policy" "guardduty_findings" {
+  count          = var.is_aggregation_region ? 1 : 0
+  event_bus_name = aws_cloudwatch_event_bus.guardduty_findings[0].name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "AllowSameAccountPutEvents"
+        Effect    = "Allow"
+        Principal = { AWS = "arn:aws:iam::${var.management_account_id}:root" }
+        Action    = "events:PutEvents"
+        Resource  = aws_cloudwatch_event_bus.guardduty_findings[0].arn
+      }
+    ]
+  })
+}
+
+# --- EventBridge Rule: default bus → SNS ---
+resource "aws_cloudwatch_event_rule" "guardduty_default_bus" {
+  count       = var.is_aggregation_region ? 1 : 0
+  name        = "guardduty-findings-to-sns"
+  description = "Forward GuardDuty MEDIUM+ findings to SNS"
+
+  event_pattern = jsonencode({
+    source      = ["aws.guardduty"]
+    detail-type = ["GuardDuty Finding"]
+    detail = {
+      severity = [{ numeric = [">=", 4] }]
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "guardduty_default_bus_to_sns" {
+  count     = var.is_aggregation_region ? 1 : 0
+  rule      = aws_cloudwatch_event_rule.guardduty_default_bus[0].name
+  target_id = "guardduty-sns"
+  arn       = aws_sns_topic.guardduty_findings[0].arn
+
+  input_transformer {
+    input_paths = {
+      account     = "$.account"
+      region      = "$.region"
+      id          = "$.detail.id"
+      severity    = "$.detail.severity"
+      type        = "$.detail.type"
+      title       = "$.detail.title"
+      description = "$.detail.description"
+    }
+    input_template = "\"[GuardDuty] <title>\\n\\nAccount:  <account>\\nRegion:   <region>\\nSeverity: <severity>\\nType:     <type>\\n\\n<description>\\n\\nhttps://console.aws.amazon.com/guardduty/home?region=<region>#/findings?search=id%3D<id>\""
+  }
+}
+
+# --- EventBridge Rule: custom bus → SNS ---
+resource "aws_cloudwatch_event_rule" "guardduty_custom_bus" {
+  count          = var.is_aggregation_region ? 1 : 0
+  name           = "guardduty-findings-custom-to-sns"
+  description    = "Forward findings from custom bus to SNS"
+  event_bus_name = aws_cloudwatch_event_bus.guardduty_findings[0].name
+
+  event_pattern = jsonencode({
+    source      = ["aws.guardduty"]
+    detail-type = ["GuardDuty Finding"]
+    detail = {
+      severity = [{ numeric = [">=", 4] }]
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "guardduty_custom_bus_to_sns" {
+  count          = var.is_aggregation_region ? 1 : 0
+  rule           = aws_cloudwatch_event_rule.guardduty_custom_bus[0].name
+  event_bus_name = aws_cloudwatch_event_bus.guardduty_findings[0].name
+  target_id      = "guardduty-sns"
+  arn            = aws_sns_topic.guardduty_findings[0].arn
+
+  input_transformer {
+    input_paths = {
+      account     = "$.account"
+      region      = "$.region"
+      id          = "$.detail.id"
+      severity    = "$.detail.severity"
+      type        = "$.detail.type"
+      title       = "$.detail.title"
+      description = "$.detail.description"
+    }
+    input_template = "\"[GuardDuty] <title>\\n\\nAccount:  <account>\\nRegion:   <region>\\nSeverity: <severity>\\nType:     <type>\\n\\n<description>\\n\\nhttps://console.aws.amazon.com/guardduty/home?region=<region>#/findings?search=id%3D<id>\""
+  }
+}
+
+# --- IAM Role for cross-region forwarding ---
+resource "aws_iam_role" "guardduty_eventbridge_forwarding" {
+  count = var.is_aggregation_region ? 1 : 0
+  name  = "guardduty-eventbridge-forwarding"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect    = "Allow"
+        Principal = { Service = "events.amazonaws.com" }
+        Action    = "sts:AssumeRole"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "guardduty_eventbridge_forwarding" {
+  count = var.is_aggregation_region ? 1 : 0
+  name  = "guardduty-eventbridge-forwarding"
+  role  = aws_iam_role.guardduty_eventbridge_forwarding[0].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "events:PutEvents"
+        Resource = aws_cloudwatch_event_bus.guardduty_findings[0].arn
+      }
+    ]
+  })
+}
+
+# =============================================================================
+# Cross-region forwarding (non-aggregation regions only)
+# =============================================================================
+
+resource "aws_cloudwatch_event_rule" "guardduty_forward" {
+  count       = var.enable_finding_forwarding ? 1 : 0
+  name        = "guardduty-findings-forward"
+  description = "Forward GuardDuty MEDIUM+ findings to aggregation region"
+
+  event_pattern = jsonencode({
+    source      = ["aws.guardduty"]
+    detail-type = ["GuardDuty Finding"]
+    detail = {
+      severity = [{ numeric = [">=", 4] }]
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "guardduty_forward" {
+  count     = var.enable_finding_forwarding ? 1 : 0
+  rule      = aws_cloudwatch_event_rule.guardduty_forward[0].name
+  target_id = "guardduty-forward"
+  arn       = var.forwarding_event_bus_arn
+  role_arn  = var.forwarding_role_arn
+}
 ```
 
 #### outputs.tf
@@ -152,6 +371,21 @@ resource "aws_guardduty_organization_configuration" "this" {
 output "detector_id" {
   description = "GuardDuty Detector ID"
   value       = aws_guardduty_detector.this.id
+}
+
+output "sns_topic_arn" {
+  description = "GuardDuty findings SNS Topic ARN (only set for aggregation region)"
+  value       = var.is_aggregation_region ? aws_sns_topic.guardduty_findings[0].arn : ""
+}
+
+output "event_bus_arn" {
+  description = "Custom Event Bus ARN for cross-region forwarding (only set for aggregation region)"
+  value       = var.is_aggregation_region ? aws_cloudwatch_event_bus.guardduty_findings[0].arn : ""
+}
+
+output "forwarding_role_arn" {
+  description = "IAM Role ARN for cross-region EventBridge forwarding (only set for aggregation region)"
+  value       = var.is_aggregation_region ? aws_iam_role.guardduty_eventbridge_forwarding[0].arn : ""
 }
 ```
 
@@ -218,6 +452,7 @@ locals {
   project     = "<project_name>"
   environment = "management"
 
+  management_account_id      = "<management_account_id>"
   delegated_admin_account_id = "<delegated_admin_account_id>"
 
   member_accounts = {
@@ -295,20 +530,27 @@ moved {
 
 #### Module Calls
 
-Call the module for each target region:
+The aggregation region receives `is_aggregation_region = true` and `management_account_id`. Other regions receive `enable_finding_forwarding = true` and the aggregation region module's outputs (`event_bus_arn` / `forwarding_role_arn`).
 
 ```hcl
+# Aggregation region
 module "guardduty_<aggregation_region>" {
   source                     = "../../modules/management/guardduty-region"
   delegated_admin_account_id = local.delegated_admin_account_id
   member_accounts            = local.member_accounts
-  providers                  = { aws = aws }  # Default provider (aggregation region)
+  is_aggregation_region      = true
+  management_account_id      = local.management_account_id
+  providers                  = { aws = aws.<aggregation_region> }
 }
 
+# Other regions (non-aggregation)
 module "guardduty_<other_region>" {
   source                     = "../../modules/management/guardduty-region"
   delegated_admin_account_id = local.delegated_admin_account_id
   member_accounts            = local.member_accounts
+  enable_finding_forwarding  = true
+  forwarding_event_bus_arn   = module.guardduty_<aggregation_region>.event_bus_arn
+  forwarding_role_arn        = module.guardduty_<aggregation_region>.forwarding_role_arn
   providers                  = { aws = aws.<other_region> }
 }
 
@@ -317,78 +559,71 @@ module "guardduty_<other_region>" {
 
 #### Outputs
 
-Output the Detector ID for each region:
+Output the Detector ID for each region and the aggregation region's SNS Topic ARN:
 
 ```hcl
 output "guardduty_detector_id_<region>" {
   description = "GuardDuty Detector ID (<region>)"
   value       = module.guardduty_<region>.detector_id
 }
+
+output "guardduty_sns_topic_arn" {
+  description = "GuardDuty findings SNS Topic ARN (<aggregation_region>)"
+  value       = module.guardduty_<aggregation_region>.sns_topic_arn
+}
 ```
 
 ---
 
-### Step 5: env/management/guardduty-notifications.tf — Email Notifications
+### Step 5: env/management/chatbot.tf — Slack Notifications (AWS Chatbot)
 
-Aggregate MEDIUM+ (severity >= 4.0) findings from all regions to the aggregation region and send email notifications. Notification resources are created in the delegated admin account (= management account).
+Connect the SNS Topic to AWS Chatbot to deliver GuardDuty findings to Slack.
+
+> **Preparation**: The Slack workspace integration must be configured in the AWS Chatbot console beforehand. Terraform cannot manage the workspace connection itself.
+
+```hcl
+# --- IAM Role for AWS Chatbot ---
+resource "aws_iam_role" "chatbot_guardduty" {
+  name = "chatbot-guardduty-findings"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect    = "Allow"
+        Principal = { Service = "chatbot.amazonaws.com" }
+        Action    = "sts:AssumeRole"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "chatbot_guardduty" {
+  role       = aws_iam_role.chatbot_guardduty.name
+  policy_arn = "arn:aws:iam::aws:policy/ReadOnlyAccess"
+}
+
+# --- AWS Chatbot Slack Channel Configuration ---
+resource "aws_chatbot_slack_channel_configuration" "guardduty" {
+  configuration_name = "guardduty-findings"
+  iam_role_arn       = aws_iam_role.chatbot_guardduty.arn
+  slack_channel_id   = "<slack_channel_id>"
+  slack_team_id      = "<slack_workspace_id>"
+  sns_topic_arns     = [module.guardduty_<aggregation_region>.sns_topic_arn]
+  logging_level      = "ERROR"
+}
+```
 
 #### Architecture
 
 ```
 [Aggregation Region]
-  default EventBus → EventBridge Rule → SNS Topic → Email
-  custom  EventBus "guardduty-findings" → EventBridge Rule → SNS Topic → Email
+  default EventBus → EventBridge Rule → SNS Topic ─┐
+  custom  EventBus → EventBridge Rule → SNS Topic ──┤
+                                                     └→ AWS Chatbot → Slack
 
 [Other Regions]
   default EventBus → EventBridge Rule → Aggregation Region custom EventBus (forwarding)
-```
-
-#### Required Resources
-
-1. **SNS Topic + Email Subscription** (aggregation region)
-   - Topic: `guardduty-findings`
-   - Topic Policy: Allow `sns:Publish` from `events.amazonaws.com`
-   - Subscription: `protocol = "email"`, `endpoint = "<notification_email>"`
-   - **Note**: After apply, a confirmation email is sent to the notification address. Manual approval is required.
-
-2. **Custom Event Bus** (aggregation region)
-   - Name: `guardduty-findings`
-   - Bus Policy: Allow `events:PutEvents` from the same account
-
-3. **EventBridge Rule: aggregation region default bus → SNS**
-   - event_pattern: `source=aws.guardduty, detail-type=GuardDuty Finding, detail.severity >= 4`
-   - target: SNS Topic
-   - input_transformer to format output (Account/Region/Severity/Type/Description + console link)
-
-4. **EventBridge Rule: custom bus → SNS**
-   - Routes findings forwarded from other regions to SNS
-   - Uses the same input_transformer
-
-5. **IAM Role** (IAM is a global service, but created under the default provider (aggregation region) in Terraform)
-   - Trust policy: `events.amazonaws.com`
-   - Permission: `events:PutEvents` on `arn:aws:events:<aggregation_region>:<account>:event-bus/guardduty-findings`
-
-6. **Forwarding rules per region** (one per region, excluding the aggregation region)
-   - Create EventBridge Rule + Target using each provider alias
-   - event_pattern: severity >= 4.0 filter
-   - target: aggregation region custom event bus ARN
-   - role_arn: IAM Role above
-
-#### Input Transformer Template Example
-
-```hcl
-input_transformer {
-  input_paths = {
-    account     = "$.account"
-    region      = "$.region"
-    id          = "$.detail.id"
-    severity    = "$.detail.severity"
-    type        = "$.detail.type"
-    title       = "$.detail.title"
-    description = "$.detail.description"
-  }
-  input_template = "\"[GuardDuty] <title>\\n\\nAccount:  <account>\\nRegion:   <region>\\nSeverity: <severity>\\nType:     <type>\\n\\n<description>\\n\\nhttps://console.aws.amazon.com/guardduty/home?region=<region>#/findings?search=id%3D<id>\""
-}
 ```
 
 ---
@@ -412,8 +647,8 @@ input_transformer {
 5. **EKS_RUNTIME_MONITORING and RUNTIME_MONITORING are mutually exclusive**
    - RUNTIME_MONITORING is the successor. Set EKS_RUNTIME_MONITORING to DISABLED and control EKS addon management via the RUNTIME_MONITORING feature instead.
 
-6. **SNS Email Subscription requires manual confirmation**
-   - After `terraform apply`, a confirmation email is sent to the notification address. Notifications will not be delivered until confirmed.
+6. **AWS Chatbot Slack workspace integration requires manual setup**
+   - Terraform can manage `aws_chatbot_slack_channel_configuration` for channel settings, but the workspace integration itself must be configured in the AWS Chatbot console beforehand.
 
 ### Terraform Implementation
 
@@ -468,14 +703,12 @@ terraform plan
 # 3. Apply
 terraform apply
 
-# 4. Confirm SNS Email Subscription
-#    Click "Confirm subscription" in the confirmation email sent to the notification address
-
-# 5. Test notifications with sample findings
+# 4. Test Slack notifications with sample findings
 aws guardduty create-sample-findings \
   --detector-id <detector_id> \
   --finding-types UnauthorizedAccess:IAMUser/InstanceCredentialExfiltration \
   --region <aggregation_region>
+# → Verify that a notification appears in the Slack channel
 ```
 
 ---
