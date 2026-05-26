@@ -8,7 +8,7 @@ A collection of Terraform recipes for AWS environments.
 
 | Recipe | Category | Description |
 |---|---|---|
-| [GuardDuty Multi-Region Management](guardduty-multiregion-setup.md) | Security | Enable GuardDuty across all regions, managed from a single Terraform workspace. Includes email notifications for MEDIUM+ findings. |
+| [GuardDuty Multi-Region Management](guardduty-multiregion-setup.md) | Security | Enable GuardDuty across all regions, managed from a single Terraform workspace. Includes Slack notifications via AWS Chatbot for MEDIUM+ findings. |
 
 ## Usage
 
