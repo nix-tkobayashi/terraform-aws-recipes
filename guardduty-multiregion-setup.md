@@ -1,53 +1,55 @@
-# GuardDuty 全リージョン一元管理 — Terraform 構築プロンプト
+# GuardDuty Multi-Region Management — Terraform Construction Prompt
 
-## 概要
+[日本語版](guardduty-multiregion-setup.ja.md)
 
-AWS Organizations 環境において、GuardDuty を対象リージョンで有効化し、単一の Terraform ワークスペース（management 環境）から一元管理する構成を構築してください。MEDIUM 以上の Finding はメール通知します。
+## Overview
 
-### 用語定義
+Build a configuration that enables GuardDuty across target regions within an AWS Organizations environment, managed from a single Terraform workspace (management environment). Findings of MEDIUM severity or higher are delivered via email notifications.
 
-| 用語 | 意味 |
+### Terminology
+
+| Term | Meaning |
 |---|---|
-| **management account** | AWS Organizations の管理アカウント。組織の作成者であり、委任管理者の指定権限を持つ |
-| **delegated administrator** | GuardDuty の委任管理者アカウント。Detector・メンバー管理・Organization 設定を行う |
-| **集約リージョン** | EventBridge / SNS による通知を集約するリージョン |
+| **management account** | The AWS Organizations management account. The organization creator that has authority to designate delegated administrators. |
+| **delegated administrator** | The GuardDuty delegated administrator account. Manages Detectors, members, and Organization configuration. |
+| **aggregation region** | The region where EventBridge / SNS notifications are aggregated. |
 
-> **本仕様の前提**: management account が GuardDuty の delegated administrator を兼任する構成です。delegated administrator を別アカウントにする場合は、management account 用の provider と delegated admin 用の provider（assume_role）を分離する設計が別途必要になります。
+> **Assumption**: This specification assumes the management account also serves as the GuardDuty delegated administrator. If delegating to a separate account, you will need a separate design with distinct providers for the management account and delegated admin account (via `assume_role`).
 
 ---
 
-## 前提条件
+## Prerequisites
 
-以下の情報を事前に確認・提供してください：
+Confirm or provide the following information before starting:
 
-| 項目 | 説明 |
+| Item | Description |
 |---|---|
-| **management account ID** | AWS Organizations の management account ID |
-| **delegated admin account ID** | GuardDuty の delegated administrator（本仕様では management account と同一） |
-| **メンバーアカウント一覧** | `{ "アカウントID" = "rootメールアドレス" }` の map 形式 |
-| **対象リージョン一覧** | GuardDuty を有効化するリージョン（後述のサンプルを参考にプロジェクトごとに定義） |
-| **集約リージョン** | EventBridge / SNS 通知を集約するリージョン（例: `ap-northeast-1`） |
-| **通知先メールアドレス** | GuardDuty Finding のメール通知先 |
-| **Terraform backend** | S3 バケット名、key、リージョン |
-| **既存 Detector ID** | 各リージョンで既に GuardDuty が有効な場合、その Detector ID（`aws guardduty list-detectors --region <region>` で取得） |
+| **management account ID** | AWS Organizations management account ID |
+| **delegated admin account ID** | GuardDuty delegated administrator (same as management account in this spec) |
+| **Member account list** | Map format: `{ "account_id" = "root_email" }` |
+| **Target regions** | Regions where GuardDuty will be enabled (define per project; see sample below) |
+| **Aggregation region** | Region where EventBridge / SNS notifications are aggregated (e.g., `ap-northeast-1`) |
+| **Notification email** | Email address for GuardDuty Finding notifications |
+| **Terraform backend** | S3 bucket name, key, and region |
+| **Existing Detector IDs** | If GuardDuty is already enabled in a region, its Detector ID (`aws guardduty list-detectors --region <region>`) |
 
-### コスト確認
+### Cost Considerations
 
-GuardDuty を全リージョン・全アカウントで有効化すると、EBS Malware Protection・Runtime Monitoring 等の保護機能により課金が発生します。apply 前に AWS の料金ページで費用影響を確認してください。
+Enabling GuardDuty across all regions and accounts incurs charges for protection features such as EBS Malware Protection and Runtime Monitoring. Review the AWS pricing page for cost impact before applying.
 
 ---
 
-## ディレクトリ構成
+## Directory Structure
 
 ```
 terraform/
-├── env/management/                             # 単一 tfstate で全リージョン管理
-│   ├── backend.tf                              # provider alias + S3 backend
-│   ├── locals.tf                               # project / environment / account ID / regions
-│   ├── guardduty.tf                            # import + module 呼出 + outputs
-│   ├── guardduty-notifications.tf              # EventBridge 集約 → SNS → メール
+├── env/management/                             # Single tfstate managing all regions
+│   ├── backend.tf                              # Provider aliases + S3 backend
+│   ├── locals.tf                               # project / environment / account IDs / regions
+│   ├── guardduty.tf                            # import + module calls + outputs
+│   ├── guardduty-notifications.tf              # EventBridge aggregation → SNS → Email
 │
-└── modules/management/guardduty-region/         # 1 リージョン分の GuardDuty 設定
+└── modules/management/guardduty-region/         # GuardDuty configuration for one region
     ├── main.tf
     ├── variables.tf
     ├── outputs.tf
@@ -56,22 +58,22 @@ terraform/
 
 ---
 
-## 構築手順
+## Build Steps
 
-### Step 1: modules/management/guardduty-region/ — 共通モジュール
+### Step 1: modules/management/guardduty-region/ — Shared Module
 
-1 リージョン分の GuardDuty 設定をモジュール化します。このモジュールを対象リージョン数だけ呼び出すことで全リージョンに同一設定を展開します。
+Encapsulate per-region GuardDuty configuration into a module. This module is called once per target region to deploy identical settings across all regions.
 
 #### variables.tf
 
 ```hcl
 variable "delegated_admin_account_id" {
-  description = "GuardDuty delegated administrator として設定する AWS アカウント ID"
+  description = "AWS account ID to designate as GuardDuty delegated administrator"
   type        = string
 }
 
 variable "member_accounts" {
-  description = "GuardDuty メンバーアカウント (key: account_id, value: root email)"
+  description = "GuardDuty member accounts (key: account_id, value: root email)"
   type        = map(string)
   default     = {}
 }
@@ -79,7 +81,7 @@ variable "member_accounts" {
 
 #### main.tf
 
-以下のリソースを含めてください：
+Include the following resources:
 
 ```hcl
 # --- Detector ---
@@ -88,8 +90,8 @@ resource "aws_guardduty_detector" "this" {
   finding_publishing_frequency = "SIX_HOURS"
 }
 
-# --- Detector Features (delegated admin アカウント自身の保護) ---
-# 以下の機能を個別に aws_guardduty_detector_feature で定義:
+# --- Detector Features (protection for the delegated admin account itself) ---
+# Define each feature individually via aws_guardduty_detector_feature:
 #   S3_DATA_EVENTS          → ENABLED
 #   EKS_AUDIT_LOGS          → ENABLED
 #   EBS_MALWARE_PROTECTION  → ENABLED
@@ -101,7 +103,7 @@ resource "aws_guardduty_detector" "this" {
 #     additional: ECS_FARGATE_AGENT_MANAGEMENT=ENABLED
 #     additional: EC2_AGENT_MANAGEMENT=DISABLED
 
-# --- メンバーアカウント登録 ---
+# --- Member Account Registration ---
 resource "aws_guardduty_member" "this" {
   for_each = var.member_accounts
 
@@ -112,26 +114,26 @@ resource "aws_guardduty_member" "this" {
   disable_email_notification = true
 
   lifecycle {
-    # Organizations 管理下では AWS が invite/disassociate を制御するため
-    # これらのフィールドの diff を無視する（ignore しないと毎回差分が出る）
+    # Under Organizations, AWS controls invite/disassociate.
+    # Ignoring these fields prevents perpetual diffs on every plan.
     ignore_changes = [email, disable_email_notification, invite]
   }
 }
 
-# --- Organizations 委任管理者 ---
+# --- Organizations Delegated Administrator ---
 resource "aws_guardduty_organization_admin_account" "this" {
   admin_account_id = var.delegated_admin_account_id
 }
 
-# --- Organizations 自動有効化 ---
+# --- Organizations Auto-Enable ---
 resource "aws_guardduty_organization_configuration" "this" {
   auto_enable_organization_members = "ALL"
   detector_id                      = aws_guardduty_detector.this.id
   depends_on                       = [aws_guardduty_organization_admin_account.this]
 }
 
-# --- Organizations Feature ポリシー ---
-# 以下を aws_guardduty_organization_configuration_feature で定義:
+# --- Organizations Feature Policy ---
+# Define via aws_guardduty_organization_configuration_feature:
 #   S3_DATA_EVENTS          → auto_enable = "ALL"
 #   EBS_MALWARE_PROTECTION  → auto_enable = "ALL"
 #   RDS_LOGIN_EVENTS        → auto_enable = "ALL"
@@ -168,25 +170,25 @@ terraform {
 
 ---
 
-### Step 2: env/management/backend.tf — Provider Alias
+### Step 2: env/management/backend.tf — Provider Aliases
 
-対象リージョンに対して provider alias を定義します。
+Define provider aliases for each target region.
 
 ```hcl
 terraform {
   backend "s3" {
-    bucket = "<S3バケット名>"
+    bucket = "<s3_bucket_name>"
     key    = "management/terraform.tfstate"
-    region = "<集約リージョン>"
+    region = "<aggregation_region>"
   }
   required_providers {
-    aws = { source = "hashicorp/aws", version = "<バージョン>" }
+    aws = { source = "hashicorp/aws", version = "<version>" }
   }
 }
 
-# デフォルト provider (集約リージョン)
+# Default provider (aggregation region)
 provider "aws" {
-  region = "<集約リージョン>"
+  region = "<aggregation_region>"
   default_tags {
     tags = {
       Project     = local.project
@@ -196,8 +198,8 @@ provider "aws" {
   }
 }
 
-# 対象リージョンごとに alias を定義（集約リージョン以外）:
-# 形式:
+# Define an alias for each target region (except the aggregation region):
+# Format:
 #   provider "aws" {
 #     alias  = "us_east_1"
 #     region = "us-east-1"
@@ -207,42 +209,42 @@ provider "aws" {
 
 ---
 
-### Step 3: env/management/locals.tf — 共通変数
+### Step 3: env/management/locals.tf — Shared Variables
 
-プロジェクト情報とアカウント情報を `locals.tf` にまとめます。
+Consolidate project and account information in `locals.tf`.
 
 ```hcl
 locals {
-  project     = "<プロジェクト名>"
+  project     = "<project_name>"
   environment = "management"
 
-  delegated_admin_account_id = "<delegated admin アカウント ID>"
+  delegated_admin_account_id = "<delegated_admin_account_id>"
 
   member_accounts = {
-    "<アカウントID>" = "<rootメール>"
-    # ... 全メンバー分
+    "<account_id>" = "<root_email>"
+    # ... all member accounts
   }
 
-  aggregation_region = "<集約リージョン>"
+  aggregation_region = "<aggregation_region>"
 
-  # 既存 Detector ID（既に GuardDuty が有効なリージョンのみ必要）
+  # Existing Detector IDs (only needed for regions where GuardDuty is already enabled)
   detector_ids = {
     ap_northeast_1 = "<detector_id>"
     us_east_1      = "<detector_id>"
-    # ... 各リージョン分
+    # ... per region
   }
 }
 ```
 
 ---
 
-### Step 4: env/management/guardduty.tf — モジュール呼び出し
+### Step 4: env/management/guardduty.tf — Module Calls
 
-#### import ブロック（既存リソースの取り込み）
+#### Import Blocks (importing existing resources)
 
-既に AWS 上で GuardDuty が有効なリージョンについて、以下の import を定義します。
+For regions where GuardDuty is already enabled, define the following imports.
 
-**基本リソース**（各リージョンにつき 3 つ）:
+**Core resources** (3 per region):
 
 ```hcl
 import {
@@ -259,7 +261,7 @@ import {
 }
 ```
 
-**メンバーアカウント**（既に登録済みの場合）:
+**Member accounts** (if already registered):
 
 ```hcl
 import {
@@ -268,19 +270,19 @@ import {
 }
 ```
 
-**Feature リソース**（既存の Detector Feature / Organization Configuration Feature がある場合）:
+**Feature resources** (existing Detector Feature / Organization Configuration Feature):
 
 ```hcl
-# aws_guardduty_detector_feature は import 不要（Terraform が差分で管理する）
-# aws_guardduty_organization_configuration_feature も同様
-# ただし、既存設定との差分が大きい場合は plan で変更内容をよく確認すること
+# aws_guardduty_detector_feature does not require import (Terraform manages diffs automatically)
+# aws_guardduty_organization_configuration_feature likewise
+# However, if there are significant diffs from existing settings, review plan output carefully
 ```
 
-> **補足**: `detector_feature` / `organization_configuration_feature` は Terraform が Detector ID を基に自動的に差分管理するため、通常は import 不要です。ただし plan 時に意図しない変更が出ないか必ず確認してください。
+> **Note**: `detector_feature` / `organization_configuration_feature` are managed by Terraform via diff based on the Detector ID, so import is typically unnecessary. Always verify during `plan` that no unintended changes are introduced.
 
-#### moved ブロック（既存フラットリソースからモジュールへの移行時のみ）
+#### Moved Blocks (only when migrating from flat resources to modules)
 
-既に Terraform state にフラットなリソース（`aws_guardduty_detector.ap_northeast_1` など）がある場合、`moved` ブロックで state を壊さず移行します：
+If flat resources (e.g., `aws_guardduty_detector.ap_northeast_1`) already exist in the Terraform state, use `moved` blocks to migrate without destroying state:
 
 ```hcl
 moved {
@@ -289,18 +291,18 @@ moved {
 }
 ```
 
-**注意**: import と moved は排他的。同じリソースに両方使わないこと。
+**Important**: `import` and `moved` are mutually exclusive. Do not use both for the same resource.
 
-#### モジュール呼び出し
+#### Module Calls
 
-対象リージョンごとにモジュールを呼び出します：
+Call the module for each target region:
 
 ```hcl
 module "guardduty_<aggregation_region>" {
   source                     = "../../modules/management/guardduty-region"
   delegated_admin_account_id = local.delegated_admin_account_id
   member_accounts            = local.member_accounts
-  providers                  = { aws = aws }  # デフォルト provider（集約リージョン）
+  providers                  = { aws = aws }  # Default provider (aggregation region)
 }
 
 module "guardduty_<other_region>" {
@@ -310,12 +312,12 @@ module "guardduty_<other_region>" {
   providers                  = { aws = aws.<other_region> }
 }
 
-# ... 対象リージョンすべてについて同様
+# ... repeat for all target regions
 ```
 
-#### outputs
+#### Outputs
 
-各リージョンの Detector ID を出力：
+Output the Detector ID for each region:
 
 ```hcl
 output "guardduty_detector_id_<region>" {
@@ -326,53 +328,53 @@ output "guardduty_detector_id_<region>" {
 
 ---
 
-### Step 5: env/management/guardduty-notifications.tf — メール通知
+### Step 5: env/management/guardduty-notifications.tf — Email Notifications
 
-全リージョンの MEDIUM 以上（severity >= 4.0）の Finding を集約リージョンに集約してメール通知します。通知リソースは delegated admin アカウント（= management account）上に作成します。
+Aggregate MEDIUM+ (severity >= 4.0) findings from all regions to the aggregation region and send email notifications. Notification resources are created in the delegated admin account (= management account).
 
-#### アーキテクチャ
+#### Architecture
 
 ```
-[集約リージョン]
+[Aggregation Region]
   default EventBus → EventBridge Rule → SNS Topic → Email
   custom  EventBus "guardduty-findings" → EventBridge Rule → SNS Topic → Email
 
-[他リージョン]
-  default EventBus → EventBridge Rule → 集約リージョンの custom EventBus に転送
+[Other Regions]
+  default EventBus → EventBridge Rule → Aggregation Region custom EventBus (forwarding)
 ```
 
-#### 必要リソース
+#### Required Resources
 
-1. **SNS Topic + Email Subscription** (集約リージョン)
+1. **SNS Topic + Email Subscription** (aggregation region)
    - Topic: `guardduty-findings`
-   - Topic Policy: `events.amazonaws.com` に `sns:Publish` を許可
-   - Subscription: `protocol = "email"`, `endpoint = "<通知先メール>"`
-   - **注意**: apply 後に通知先メールアドレスへ確認メールが届くため、手動で承認が必要
+   - Topic Policy: Allow `sns:Publish` from `events.amazonaws.com`
+   - Subscription: `protocol = "email"`, `endpoint = "<notification_email>"`
+   - **Note**: After apply, a confirmation email is sent to the notification address. Manual approval is required.
 
-2. **Custom Event Bus** (集約リージョン)
+2. **Custom Event Bus** (aggregation region)
    - Name: `guardduty-findings`
-   - Bus Policy: 自アカウントからの `events:PutEvents` を許可
+   - Bus Policy: Allow `events:PutEvents` from the same account
 
-3. **EventBridge Rule: 集約リージョン default bus → SNS**
+3. **EventBridge Rule: aggregation region default bus → SNS**
    - event_pattern: `source=aws.guardduty, detail-type=GuardDuty Finding, detail.severity >= 4`
    - target: SNS Topic
-   - input_transformer で整形（Account/Region/Severity/Type/Description + コンソールリンク）
+   - input_transformer to format output (Account/Region/Severity/Type/Description + console link)
 
 4. **EventBridge Rule: custom bus → SNS**
-   - 他リージョンから転送された Finding を SNS へ
-   - 同じ input_transformer を使用
+   - Routes findings forwarded from other regions to SNS
+   - Uses the same input_transformer
 
-5. **IAM Role** (IAM はグローバルサービスだが、Terraform 上はデフォルト provider（集約リージョン）で作成)
-   - 信頼ポリシー: `events.amazonaws.com`
-   - 権限: `events:PutEvents` on `arn:aws:events:<集約リージョン>:<account>:event-bus/guardduty-findings`
+5. **IAM Role** (IAM is a global service, but created under the default provider (aggregation region) in Terraform)
+   - Trust policy: `events.amazonaws.com`
+   - Permission: `events:PutEvents` on `arn:aws:events:<aggregation_region>:<account>:event-bus/guardduty-findings`
 
-6. **各リージョンの転送ルール** (集約リージョン以外 × 各 1 つ)
-   - 各 provider alias を使用して EventBridge Rule + Target を作成
-   - event_pattern: severity >= 4.0 のフィルタ
-   - target: 集約リージョンの custom event bus ARN
-   - role_arn: 上記 IAM Role
+6. **Forwarding rules per region** (one per region, excluding the aggregation region)
+   - Create EventBridge Rule + Target using each provider alias
+   - event_pattern: severity >= 4.0 filter
+   - target: aggregation region custom event bus ARN
+   - role_arn: IAM Role above
 
-#### Input Transformer テンプレート例
+#### Input Transformer Template Example
 
 ```hcl
 input_transformer {
@@ -391,52 +393,52 @@ input_transformer {
 
 ---
 
-## 注意事項・Tips
+## Notes & Tips
 
-### AWS の挙動に関する注意
+### AWS Behavior
 
-1. **`aws_guardduty_member` の lifecycle ignore_changes は必須**
-   - Organizations 管理下のメンバーは AWS 側が invite/email を制御するため、`ignore_changes = [email, disable_email_notification, invite]` を入れないと毎回差分が出る
+1. **`aws_guardduty_member` lifecycle ignore_changes is required**
+   - Under Organizations, AWS controls invite/email for members. Without `ignore_changes = [email, disable_email_notification, invite]`, perpetual diffs appear on every plan.
 
-2. **`aws_guardduty_organization_admin_account` は management account の権限で実行が必要**
-   - delegated admin アカウントの credentials ではなく、Organizations の management account から apply すること
+2. **`aws_guardduty_organization_admin_account` requires management account credentials**
+   - Apply using the Organizations management account credentials, not the delegated admin account.
 
-3. **import ブロックは plan/apply 1 回目で消化される**
-   - 初回 apply 後に import ブロックを削除しても OK（残しておいても害はない）
+3. **Import blocks are consumed on the first plan/apply**
+   - You may remove import blocks after the initial apply (leaving them is also harmless).
 
-4. **Detector は各リージョンに 1 つしか存在できない**
-   - 既に有効な場合は import で取り込む。新規作成しようとするとエラーになる
+4. **Only one Detector can exist per region**
+   - If already enabled, import it. Attempting to create a new one will result in an error.
 
-5. **EKS_RUNTIME_MONITORING と RUNTIME_MONITORING は排他的な関係**
-   - RUNTIME_MONITORING が後継。EKS_RUNTIME_MONITORING は DISABLED にして RUNTIME_MONITORING 側の EKS_ADDON_MANAGEMENT で制御する
+5. **EKS_RUNTIME_MONITORING and RUNTIME_MONITORING are mutually exclusive**
+   - RUNTIME_MONITORING is the successor. Set EKS_RUNTIME_MONITORING to DISABLED and control EKS addon management via the RUNTIME_MONITORING feature instead.
 
-6. **SNS Email Subscription は手動承認が必要**
-   - `terraform apply` 後に通知先メールアドレスへ確認メールが届く。承認しないと通知が届かない
+6. **SNS Email Subscription requires manual confirmation**
+   - After `terraform apply`, a confirmation email is sent to the notification address. Notifications will not be delivered until confirmed.
 
-### Terraform 実装の注意
+### Terraform Implementation
 
-1. **`for_each` での全リージョン展開は使えない**
-   - provider alias は `for_each` / `count` に渡せないため、対象リージョン数だけモジュール呼び出しを明示的に書く必要がある
+1. **`for_each` cannot be used for multi-region expansion**
+   - Provider aliases cannot be passed via `for_each` / `count`, so module calls must be explicitly written for each target region.
 
-2. **moved と import は排他的**
-   - 既に Terraform state にあるリソースは `moved` で移行、state にないが AWS 上に存在するリソースは `import` で取り込む
+2. **`moved` and `import` are mutually exclusive**
+   - Use `moved` for resources already in Terraform state; use `import` for resources that exist in AWS but not in state.
 
-3. **apply 順序**
-   - 初回は `terraform plan` で import/moved の結果を確認してから apply
-   - 大量のリソース（リージョン数 × リソース数）になるため plan 結果をよく確認すること
+3. **Apply order**
+   - On the first run, verify import/moved results with `terraform plan` before applying.
+   - The total number of resources (regions × resources per region) can be large — review plan output carefully.
 
 ---
 
-## 対象リージョンについて
+## Target Regions
 
-対象リージョンはプロジェクトごとに定義してください。以下のコマンドで ENABLED_BY_DEFAULT リージョンを確認できます：
+Define target regions per project. Use the following command to list ENABLED_BY_DEFAULT regions:
 
 ```bash
 aws account list-regions --region-opt-status-contains ENABLED_BY_DEFAULT \
   --query 'Regions[].RegionName' --output text
 ```
 
-### サンプル: 17 ENABLED_BY_DEFAULT リージョン
+### Sample: 17 ENABLED_BY_DEFAULT Regions
 
 ```
 ap-northeast-1, ap-northeast-2, ap-northeast-3,
@@ -447,38 +449,38 @@ sa-east-1,
 us-east-1, us-east-2, us-west-1, us-west-2
 ```
 
-> **注意**: GuardDuty がサポートするリージョンは上記 17 以外にも存在します（ap-southeast-3, ca-west-1, eu-central-2 等）。オプトインリージョンを含めるかどうかはプロジェクトの要件に応じて判断してください。
+> **Note**: GuardDuty supports regions beyond the 17 listed above (e.g., ap-southeast-3, ca-west-1, eu-central-2). Whether to include opt-in regions should be decided based on project requirements.
 
 ---
 
-## 検証手順
+## Verification Steps
 
-構築完了後、以下の手順で動作確認を行ってください：
+After build completion, verify with the following steps:
 
 ```bash
-# 1. フォーマット・検証
+# 1. Format and validate
 terraform fmt -recursive
 terraform validate
 
-# 2. Plan 確認（import/moved の結果を確認）
+# 2. Review plan (verify import/moved results)
 terraform plan
 
 # 3. Apply
 terraform apply
 
-# 4. SNS Email Subscription の承認
-#    通知先メールアドレスに届いた確認メールで "Confirm subscription" をクリック
+# 4. Confirm SNS Email Subscription
+#    Click "Confirm subscription" in the confirmation email sent to the notification address
 
-# 5. サンプル Finding で通知テスト
+# 5. Test notifications with sample findings
 aws guardduty create-sample-findings \
   --detector-id <detector_id> \
   --finding-types UnauthorizedAccess:IAMUser/InstanceCredentialExfiltration \
-  --region <集約リージョン>
+  --region <aggregation_region>
 ```
 
 ---
 
-## 既存 Detector ID の一括取得コマンド
+## Bulk Retrieval of Existing Detector IDs
 
 ```bash
 for region in $(aws account list-regions \
