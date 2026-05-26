@@ -1,12 +1,12 @@
-# terraform-aws-security-baseline
+# terraform-aws-recipes
 
-AWS Organizations 環境におけるセキュリティサービスの Terraform 構築レシピ集です。
+AWS 環境における Terraform 構築レシピ集です。
 
 ## Recipes
 
-| レシピ | 概要 |
-|---|---|
-| [GuardDuty 全リージョン一元管理](guardduty-multiregion-setup.md) | GuardDuty を全リージョンで有効化し、単一 Terraform ワークスペースから管理。MEDIUM+ Finding のメール通知付き |
+| レシピ | カテゴリ | 概要 |
+|---|---|---|
+| [GuardDuty 全リージョン一元管理](guardduty-multiregion-setup.md) | Security | GuardDuty を全リージョンで有効化し、単一 Terraform ワークスペースから管理。MEDIUM+ Finding のメール通知付き |
 
 ## 使い方
 
