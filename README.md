@@ -14,7 +14,7 @@ A collection of Terraform recipes for AWS environments.
 
 | Script | Category | Description |
 |---|---|---|
-| [Delete Default VPCs](delete-default-vpcs.md) | Security | Safely delete unused Default VPCs across all AWS regions with dry-run support and multi-layer safety checks. |
+| [Delete Default VPCs](scripts/delete-default-vpcs.md) | Security | Safely delete unused Default VPCs across all AWS regions with dry-run support and multi-layer safety checks. |
 
 ## Usage
 

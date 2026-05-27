@@ -14,7 +14,7 @@ AWS 環境における Terraform 構築レシピ集です。
 
 | スクリプト | カテゴリ | 概要 |
 |---|---|---|
-| [Default VPC 一括削除](delete-default-vpcs.ja.md) | Security | 全リージョンの未使用 Default VPC を安全に削除。ドライラン対応・多層安全チェック付き |
+| [Default VPC 一括削除](scripts/delete-default-vpcs.ja.md) | Security | 全リージョンの未使用 Default VPC を安全に削除。ドライラン対応・多層安全チェック付き |
 
 ## 使い方
 
