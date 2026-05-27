@@ -10,6 +10,12 @@ A collection of Terraform recipes for AWS environments.
 |---|---|---|
 | [GuardDuty Multi-Region Management](guardduty-multiregion-setup.md) | Security | Enable GuardDuty across all regions, managed from a single Terraform workspace. Includes Slack notifications via AWS Chatbot for MEDIUM+ findings. |
 
+## Scripts
+
+| Script | Category | Description |
+|---|---|---|
+| [Delete Default VPCs](delete-default-vpcs.md) | Security | Safely delete unused Default VPCs across all AWS regions with dry-run support and multi-layer safety checks. |
+
 ## Usage
 
 Each recipe is designed as a construction prompt for AI assistants. Fill in the prerequisite parameters and pass it as a prompt to generate Terraform code.
