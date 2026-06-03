@@ -12,6 +12,13 @@ AWS 環境における Terraform 構築レシピ集です。
 | [SecurityHub Finding Aggregator](securityhub-finding-aggregator.ja.md) | Security | SecurityHub のクロスリージョン Finding 集約で GuardDuty 通知パイプラインを簡素化。リージョン別 EventBridge 転送方式の代替 — 各リージョンの通知リソースが不要に |
 | [AWS Health 通知 via EventBridge](health-notification-via-eventbridge.ja.md) | Operations | us-west-2 の EventBridge 1 ルールで全リージョンの AWS Health イベントを捕捉（2025年11月〜）。AI 分析 + 重要度別ダイジェストバッチング |
 
+## 規約
+
+| ガイド | 概要 |
+|---|---|
+| [命名規則](naming-conventions.ja.md) | AWS リソース名のパターンと Terraform 識別子のルール |
+| [Terraform モジュール規約](terraform-conventions.ja.md) | モジュール構成と変数の使い分けガイドライン |
+
 ## Scripts
 
 | スクリプト | カテゴリ | 概要 |
