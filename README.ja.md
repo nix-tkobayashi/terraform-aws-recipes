@@ -10,6 +10,7 @@ AWS 環境における Terraform 構築レシピ集です。
 |---|---|---|
 | [GuardDuty 全リージョン一元管理](guardduty-multiregion-setup.ja.md) | Security | GuardDuty を全リージョンで有効化し、単一 Terraform ワークスペースから管理。AWS Chatbot 経由の Slack 通知付き（MEDIUM+ Finding） |
 | [SecurityHub Finding Aggregator](securityhub-finding-aggregator.ja.md) | Security | SecurityHub のクロスリージョン Finding 集約で GuardDuty 通知パイプラインを簡素化。リージョン別 EventBridge 転送方式の代替 — 各リージョンの通知リソースが不要に |
+| [AWS Health 通知 via EventBridge](health-notification-via-eventbridge.ja.md) | Operations | us-west-2 の EventBridge 1 ルールで全リージョンの AWS Health イベントを捕捉（2025年11月〜）。AI 分析 + 重要度別ダイジェストバッチング |
 
 ## Scripts
 
