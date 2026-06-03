@@ -9,6 +9,7 @@ A collection of Terraform recipes for AWS environments.
 | Recipe | Category | Description |
 |---|---|---|
 | [GuardDuty Multi-Region Management](guardduty-multiregion-setup.md) | Security | Enable GuardDuty across all regions, managed from a single Terraform workspace. Includes Slack notifications via AWS Chatbot for MEDIUM+ findings. |
+| [SecurityHub Finding Aggregator](securityhub-finding-aggregator.md) | Security | Simplify GuardDuty notification pipeline using SecurityHub cross-region finding aggregation. Alternative to per-region EventBridge forwarding — eliminates all per-region notification resources. |
 
 ## Scripts
 
