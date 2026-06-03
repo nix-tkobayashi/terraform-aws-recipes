@@ -12,6 +12,13 @@ A collection of Terraform recipes for AWS environments.
 | [SecurityHub Finding Aggregator](securityhub-finding-aggregator.md) | Security | Simplify GuardDuty notification pipeline using SecurityHub cross-region finding aggregation. Alternative to per-region EventBridge forwarding — eliminates all per-region notification resources. |
 | [AWS Health Notification via EventBridge](health-notification-via-eventbridge.md) | Operations | Capture all AWS Health events from all regions with a single EventBridge rule in us-west-2 (Nov 2025 feature). AI-powered analysis with severity-based digest batching. |
 
+## Conventions
+
+| Guide | Description |
+|---|---|
+| [Naming Conventions](naming-conventions.md) | AWS resource naming patterns and Terraform identifier rules |
+| [Terraform Module Conventions](terraform-conventions.md) | Module structure and variable usage guidelines |
+
 ## Scripts
 
 | Script | Category | Description |
