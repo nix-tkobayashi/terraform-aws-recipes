@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>セキュリティ通知の配送トポロジー</title>
+<style>img{max-width:100%} [hidden]{display:none!important}</style>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+JP:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --bg: #F6F7F4;
+    --surface: #FFFFFF;
+    --ink: #1E2A33;
+    --muted: #66727C;
+    --line: #D3D9DC;
+    --tf: #1F6F8B;        /* セキュリティ通知 */
+    --tf-soft: #E3EFF4;
+    --ops: #5B6E3A;       /* prod 運用アラーム */
+    --ops-soft: #EDF1E3;
+    --cu: #6E5A8E;        /* 独自アラーム */
+    --cu-soft: #ECE6F3;
+    --warn: #A8651C;
+    --warn-soft: #F6ECDD;
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --sans: "IBM Plex Sans JP", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14181B; --surface: #1C2226; --ink: #E4E9EC; --muted: #98A4AC; --line: #34404A;
+      --tf: #6DB6D2; --tf-soft: #1A2E38; --ops: #A5BE7A; --ops-soft: #232B18; --cu: #B39DD6; --cu-soft: #2A2236; --warn: #D99A4E; --warn-soft: #332816;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #14181B; --surface: #1C2226; --ink: #E4E9EC; --muted: #98A4AC; --line: #34404A;
+    --tf: #6DB6D2; --tf-soft: #1A2E38; --ops: #A5BE7A; --ops-soft: #232B18; --cu: #B39DD6; --cu-soft: #2A2236; --warn: #D99A4E; --warn-soft: #332816;
+  }
+  body { background: var(--bg); color: var(--ink); font-family: var(--sans); font-size: 15px; line-height: 1.7; margin: 0; }
+  main { max-width: 1040px; margin: 0 auto; padding: 40px 24px 64px; display: grid; gap: 36px; }
+  header h1 { font-size: 26px; font-weight: 600; margin: 0 0 6px; letter-spacing: -0.01em; text-wrap: balance; }
+  header p { margin: 0; color: var(--muted); max-width: 62ch; }
+  .eyebrow { font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-family: var(--mono); margin-bottom: 8px; }
+  h2 { font-size: 17px; font-weight: 600; margin: 0 0 12px; }
+  figure { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 20px 20px 12px; overflow-x: auto; }
+  figure svg { display: block; width: 100%; min-width: 960px; height: auto; color: var(--ink); font-family: var(--sans); }
+  figcaption { color: var(--muted); font-size: 13px; margin-top: 10px; max-width: 80ch; }
+  .legend { display: flex; gap: 20px; flex-wrap: wrap; font-size: 13px; color: var(--muted); margin: 0 0 12px; }
+  .legend span::before { content: ""; display: inline-block; width: 22px; height: 3px; vertical-align: middle; margin-right: 8px; border-radius: 2px; }
+  .legend .tf::before { background: var(--tf); }
+  .legend .ops::before { background: var(--ops); }
+  .legend .cu::before { background: var(--cu); }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-weight: 500; color: var(--muted); font-size: 13px; background: var(--bg); }
+  tbody th { color: var(--ink); font-weight: 500; width: 18%; }
+  tr:last-child td, tr:last-child th { border-bottom: 0; }
+  code { font-family: var(--mono); font-size: 12.5px; background: var(--bg); padding: 1px 5px; border-radius: 3px; }
+  .wrap { overflow-x: auto; }
+  .note { background: var(--warn-soft); border-left: 3px solid var(--warn); padding: 12px 16px; border-radius: 0 6px 6px 0; font-size: 14px; }
+  .note strong { color: var(--warn); }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px; font-size: 14px; }
+  .card h3 { margin: 0 0 6px; font-size: 14px; font-weight: 600; }
+  .card p, .card ul { margin: 0; color: var(--muted); }
+  .card ul { padding-left: 18px; }
+  .scope th.svc { width: 12%; }
+  .scope td { font-size: 13.5px; }
+  .pill { display: inline-block; font-size: 11px; font-family: var(--mono); padding: 1px 7px; border-radius: 10px; border: 1px solid var(--line); color: var(--muted); margin-right: 4px; white-space: nowrap; }
+  .pill.on { border-color: var(--tf); color: var(--tf); }
+  .pill.off { border-color: var(--warn); color: var(--warn); }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; font-size: 14px; margin: 0; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; }
+  .matrix { border-collapse: separate; border-spacing: 3px; width: 100%; font-size: 12.5px; background: transparent; border: 0; }
+  .matrix th { background: transparent; border: 0; padding: 4px 8px; font-weight: 500; color: var(--muted); font-size: 12px; }
+  .matrix thead th { text-align: center; vertical-align: bottom; }
+  .matrix tbody th { text-align: left; font-family: var(--mono); font-size: 12px; color: var(--ink); white-space: nowrap; width: auto; }
+  .matrix td { border: 0; border-radius: 4px; padding: 6px 8px; text-align: center; line-height: 1.35; vertical-align: middle; }
+  .matrix td small { display: block; font-size: 11px; opacity: 0.8; }
+  .mech { display: inline-block; font-family: var(--mono); font-size: 10.5px; font-weight: 500; padding: 0 5px; border-radius: 3px; margin: 0 1px; vertical-align: 1px; }
+  .mech.d { background: var(--tf); color: var(--surface); }
+  .mech.a { background: var(--surface); color: var(--tf); border: 1px solid var(--tf); }
+  .mech.i { background: var(--surface); color: var(--tf); border: 1px dashed var(--tf); }
+  .mech.g { background: var(--cu); color: var(--surface); }
+  .amx tbody th.acct { font-family: var(--sans); font-weight: 600; font-size: 12.5px; vertical-align: top; text-align: left; padding-top: 10px; }
+  .amx tbody th.acct small { display: block; font-weight: 400; color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .amx td { text-align: left; font-size: 12px; }
+  .amx td .role { display: block; font-weight: 600; margin-bottom: 2px; }
+  .m-admin { background: var(--tf-soft); color: var(--ink); }
+  .m-member { background: var(--surface); border: 1px solid var(--line) !important; color: var(--ink); }
+  .m-mgmt { background: var(--cu-soft); color: var(--ink); }
+  .m-route { background: var(--surface); border: 1px solid var(--ink) !important; color: var(--ink); }
+  .amx td.m-none { color: var(--muted); text-align: center; }
+  h3.sub { font-size: 15px; font-weight: 600; margin: 28px 0 8px; }
+  .m-mgmtadmin { background: var(--cu-soft); color: var(--ink); border: 1px solid var(--cu) !important; }
+  .mech-def { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; font-size: 12.5px; color: var(--muted); margin: 0 0 12px; align-items: baseline; }
+  .m-ok { background: var(--tf-soft); color: var(--tf); font-weight: 500; }
+  .m-gap { background: var(--warn-soft); color: var(--warn); font-weight: 500; }
+  .m-ex { background: var(--bg); color: var(--muted); border: 1px dashed var(--line) !important; }
+  .m-none { color: var(--line); }
+  .m-topic { background: var(--surface); border: 1px solid var(--line) !important; color: var(--ink); font-family: var(--mono); font-size: 11px; }
+  .matrix tr.sep th, .matrix tr.sep td { padding-top: 10px; }
+  .mlegend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); margin: 0 0 10px; }
+  .mlegend span { display: inline-flex; align-items: center; gap: 6px; }
+  .mlegend i { display: inline-block; width: 14px; height: 14px; border-radius: 3px; }
+  .card a { color: var(--tf); text-decoration: none; border-bottom: 1px solid var(--line); }
+  footer { color: var(--muted); font-size: 12px; font-family: var(--mono); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">terraform-aws-recipes · security-notification-topology</div>
+    <h1>セキュリティ通知の配送トポロジー</h1>
+    <p>Security Hub / GuardDuty / Inspector / AWS Health の通知を Slack などの 1 か所に集める配置を、アカウント × リージョン × サービスの表で 3 ケース示す。使う仕組みは「委任」「集約」「統合」「直通」の 4 つで、どのケースもこの組み合わせで説明できる。対象は Security Hub CSPM。リージョンは東京（ホーム）と us-east-1（グローバルサービス）を例にする。Inspector は Hub 経由でホームに届くが、CVE の件数が多いため examples では既定で Slack 通知から除外している。</p>
+  </header>
+
+  <section>
+    <h2>4 つの仕組み</h2>
+    <div class="mech-def">
+      <span><b class="mech g">委任</b></span><span>Organizations の委任管理者。管理アカウントが別アカウントにサービスの管理権限を付与する関係。Security Hub / GuardDuty / Inspector では管理者アカウントの同じリージョンにメンバーの finding が複製される。Health では組織ビューで全アカウント分が 1 フィードになる</span>
+      <span><b class="mech a">集約</b></span><span>Security Hub のリージョン集約。リンクリージョンの finding をホームリージョンに複製する。Security Hub にしか無い機能で、GuardDuty / Inspector / Health にリージョン集約は無い</span>
+      <span><b class="mech i">統合</b></span><span>Security Hub の統合。GuardDuty / Inspector などの finding を同アカウント・同リージョンの Security Hub が取り込む。Health も取り込むがセキュリティ関連の一部だけ</span>
+      <span><b class="mech d">直通</b></span><span>EventBridge ルールが同リージョンの SNS トピックへ発行する。通知経路はこの直通ルールを置くリージョンにだけ存在する</span>
+    </div>
+    <p style="margin:0; color:var(--muted); font-size:13.5px; max-width:80ch;">4 つは 1 本の配送経路ではない。委任はアカウントを、集約はリージョンを、統合はサービスを越える別々の仕組みで、finding は「統合 → 委任 → 集約 → 直通」の順に通る場合もあれば、Health のように直通だけの場合もある。</p>
+  </section>
+
+  <section>
+    <h2>ケース 1: 委任管理者 = セキュリティ集約アカウント（推奨形）</h2>
+    <p style="margin:0 0 12px; color:var(--muted); font-size:14px; max-width:80ch;">複数アカウントを持つ組織では、AWS の Security Reference Architecture に沿って「セキュリティ集約アカウント」を委任管理者にし、通知経路をそこに 1 組だけ置くのが標準形。管理アカウントは委任するだけで、ワークロードも通知経路も持たない。</p>
+        <div class="wrap">
+    <table class="matrix amx">
+      <thead><tr><th style="text-align:left">アカウント</th><th style="text-align:left">リージョン</th><th>Security Hub</th><th>GuardDuty / Inspector</th><th>AWS Health</th><th>通知経路（EventBridge → SNS）</th></tr></thead>
+      <tbody>
+        <tr>
+          <th class="acct" rowspan="1">管理アカウント<small>Organizations の root</small></th>
+          <th>東京 / us-east-1</th>
+          <td class="m-mgmt"><span class="role">委任元</span>委任管理者に集約アカウントを指定 <b class="mech g">委任</b>。自身では有効化しない</td>
+          <td class="m-mgmt"><span class="role">委任元</span>同じく集約アカウントを委任管理者に <b class="mech g">委任</b></td>
+          <td class="m-mgmt"><span class="role">委任元</span>組織ビューを有効化し、委任管理者を指定 <b class="mech g">委任</b>（サポートプラン不問）</td>
+          <td class="m-none">置かない</td>
+        </tr>
+        <tr class="sep">
+          <th class="acct" rowspan="2">セキュリティ集約アカウント<small>委任管理者。通知経路はここだけ</small></th>
+          <th>東京<small style="display:block;color:var(--muted)">ホーム</small></th>
+          <td class="m-admin"><span class="role">管理者（ホーム）</span>全メンバーの東京分を受信 <b class="mech g">委任</b>。us-east-1 分は <b class="mech a">集約</b> で到着。ここで全 finding が揃う</td>
+          <td class="m-admin"><span class="role">管理者</span>全メンバーの東京分を受信 <b class="mech g">委任</b>。Hub へ <b class="mech i">統合</b>（通知は Hub 経由に一本化）</td>
+          <td class="m-admin"><span class="role">組織ビュー</span>全メンバーの東京発イベントを 1 フィードで受信 <b class="mech g">委任</b></td>
+          <td class="m-route"><b class="mech d">直通</b> Hub ルール（重要度・Workflow で絞る）+ Health ルール → SNS 東京 → Chatbot / Lambda</td>
+        </tr>
+        <tr>
+          <th>us-east-1<small style="display:block;color:var(--muted)">リンク</small></th>
+          <td class="m-admin"><span class="role">管理者（リンク）</span>全メンバーの us-east-1 分を受信 <b class="mech g">委任</b> → 東京へ <b class="mech a">集約</b>。ルールは置かない</td>
+          <td class="m-admin"><span class="role">管理者</span>受信 <b class="mech g">委任</b> → Hub へ <b class="mech i">統合</b> → 東京へ <b class="mech a">集約</b></td>
+          <td class="m-admin"><span class="role">組織ビュー</span>グローバルサービス + us-east-1 発（+ us-west-2 のバックアップ）を受信 <b class="mech g">委任</b></td>
+          <td class="m-route"><b class="mech d">直通</b> Health ルールのみ → SNS us-east-1 → Chatbot / Lambda（Lambda はクロスリージョン購読）</td>
+        </tr>
+        <tr class="sep">
+          <th class="acct" rowspan="2">メンバーアカウント<small>dev / prod / … 各ワークロード</small></th>
+          <th>東京</th>
+          <td class="m-member"><span class="role">メンバー</span>設定ポリシーで有効化・標準を一括適用（中央設定）。finding は集約アカウント東京へ <b class="mech g">委任</b></td>
+          <td class="m-member"><span class="role">メンバー</span>有効化は自動。finding を同リージョンの Hub へ <b class="mech i">統合</b>、管理者へ <b class="mech g">委任</b></td>
+          <td class="m-member"><span class="role">発生元</span>自アカウントのイベントが組織ビュー経由で集約アカウントへ <b class="mech g">委任</b></td>
+          <td class="m-none">置かない</td>
+        </tr>
+        <tr>
+          <th>us-east-1</th>
+          <td class="m-member"><span class="role">メンバー</span>同上。finding は集約アカウント us-east-1 へ <b class="mech g">委任</b>（その後 <b class="mech a">集約</b> で東京へ）</td>
+          <td class="m-member"><span class="role">メンバー</span>同上 <b class="mech i">統合</b> → <b class="mech g">委任</b></td>
+          <td class="m-member"><span class="role">発生元</span>同上 <b class="mech g">委任</b></td>
+          <td class="m-none">置かない</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+    <p style="margin:10px 0 0; color:var(--muted); font-size:13px; max-width:80ch;">読み方: メンバーの finding は「委任」でアカウントを越え、「集約」でリージョンを越え、「統合」でサービスを越えて、集約アカウントの東京に 1 か所に集まる。そこにだけ「直通」の EventBridge ルールと SNS を置く。Health だけはリージョン集約が無いので、us-east-1 にもう 1 本ルールが必要。</p>
+    <div class="grid2" style="margin-top:14px;">
+      <div class="card"><h3>集約アカウントに寄せる理由</h3><ul>
+        <li>通知ルール・SNS・Chatbot・調査 Lambda が 1 組で済み、アカウントが増えても経路を増やさない</li>
+        <li>メンバー側で通知設定を消されても、管理者側の複製は止まらない</li>
+        <li>中央設定でメンバーの Hub 有効化・標準・コントロールを一括管理し、設定ドリフトを防ぐ</li>
+      </ul></div>
+      <div class="card"><h3>集約・統合・直通の使い分け</h3><ul>
+        <li>アカウント横断は各サービスの<strong>委任管理者</strong>（finding が管理者アカウントに複製される）</li>
+        <li>リージョン横断は Security Hub の<strong>リージョン集約</strong>のみ。GuardDuty / Inspector は Hub への<strong>統合</strong>で乗せる</li>
+        <li>Health は<strong>組織ビュー</strong>でアカウント横断、リージョンは各リージョンの<strong>直通</strong>ルール（グローバルは us-east-1）</li>
+      </ul></div>
+      <div class="card"><h3>前提と注意</h3><ul>
+        <li>委任管理者の指定は管理アカウント側の作業。examples の case1-delegated-security-account/management がその部分</li>
+        <li>Health 組織ビューの有効化は管理アカウントのコンソール操作（全プラン）。CLI / API は Business 以上。Terraform リソースは無い</li>
+        <li>東京 + us-east-1 以外のリージョンは「リンクリージョンに含めるか、無効化するか」を設定ポリシーで決める</li>
+      </ul></div>
+      <div class="card"><h3>管理アカウント = 集約アカウントにできるか</h3><ul>
+        <li>GuardDuty は管理アカウントを委任管理者に指定できるが公式に「非推奨」。Security Hub はローカル構成なら指定できる（非推奨・管理アカウント側で手動有効化が必要）が、<strong>本資料が前提にする中央設定では管理アカウントを委任管理者にできない</strong>と明記されている</li>
+        <li>Health の組織ビューは管理アカウントでしか有効化できないが、閲覧・受信はメンバーアカウントへ委任するのが AWS の推奨（管理アカウントを絞ったまま運用チームに見せるため）</li>
+        <li>Inspector は公式ドキュメントに管理アカウント指定の可否・推奨の明記が無い。委任管理者は全リージョンで同一アカウントが必須で、管理アカウント自身の Inspector 有効化は委任管理者側から行う手順になっている</li>
+        <li>避ける理由: 管理アカウントには SCP が効かない、ワークロード（SNS / Lambda / 調査パイプライン）を置かないのが原則、請求管理者とセキュリティ管理者のアクセス分離</li>
+        <li>結論: 中央設定を使う限り管理アカウント = 集約アカウントは成立しない。ローカル構成で妥協する形はケース 2 として下に示す</li>
+      </ul></div>
+      <div class="card"><h3>参考</h3><ul>
+        <li><a href="https://docs.aws.amazon.com/prescriptive-guidance/latest/security-reference-architecture/security-tooling.html">AWS SRA: Security Tooling account</a></li>
+        <li><a href="https://docs.aws.amazon.com/securityhub/latest/userguide/central-configuration-intro.html">Security Hub 中央設定</a> / <a href="https://docs.aws.amazon.com/securityhub/latest/userguide/finding-aggregation.html">リージョン集約</a></li>
+        <li><a href="https://docs.aws.amazon.com/guardduty/latest/ug/guardduty_organizations.html">GuardDuty と Organizations</a> / <a href="https://docs.aws.amazon.com/health/latest/ug/aggregating-health-events.html">Health 組織ビューと委任管理者</a></li>
+      </ul></div>
+    </div>
+
+    <h2 style="margin-top:36px">ケース 2: 管理アカウント = セキュリティ集約アカウント（やむを得ない場合）</h2>
+    <p style="margin:0 0 12px; color:var(--muted); font-size:14px; max-width:80ch;">アカウントを増やせない、運用者が同一、といった事情で管理アカウントに集約する形。examples/security-notification-topology/case2-management-account がこの表の実装。AWS は非推奨だが動く。最大の違いは <strong>Security Hub の中央設定が使えない</strong>こと（中央設定では管理アカウントを委任管理者にできない）。そのためローカル構成になり、メンバーの有効化・標準・コントロールをアカウントごと・リージョンごとに揃える作業が残る。</p>
+    <div class="wrap">
+    <table class="matrix amx">
+      <thead><tr><th style="text-align:left">アカウント</th><th style="text-align:left">リージョン</th><th>Security Hub</th><th>GuardDuty / Inspector</th><th>AWS Health</th><th>通知経路（EventBridge → SNS）</th></tr></thead>
+      <tbody>
+        <tr>
+          <th class="acct" rowspan="2">管理アカウント = 集約アカウント<small>委任元と委任先が同一。SCP が効かない</small></th>
+          <th>東京<small style="display:block;color:var(--muted)">ホーム</small></th>
+          <td class="m-mgmtadmin"><span class="role">委任元 + 管理者（ローカル構成）</span>自分自身を委任管理者に指定 <b class="mech g">委任</b>（非推奨・手動で Hub 有効化）。メンバーの東京分を受信、us-east-1 分は <b class="mech a">集約</b>。設定ポリシーは使えない</td>
+          <td class="m-mgmtadmin"><span class="role">委任元 + 管理者</span>自分自身を委任管理者に <b class="mech g">委任</b>（GuardDuty は公式に非推奨、Inspector は可否の明記なし）。自動有効化 ALL はリージョンごとに設定。Hub へ <b class="mech i">統合</b></td>
+          <td class="m-mgmtadmin"><span class="role">組織ビュー（本来の有効化主体）</span>委任せずそのまま受信。全メンバーの東京発イベントが 1 フィードで届く</td>
+          <td class="m-route"><b class="mech d">直通</b> Hub ルール + Health ルール → SNS 東京 → Chatbot / Lambda。<span style="color:var(--warn)">通知経路・調査 Lambda が管理アカウントに載る</span></td>
+        </tr>
+        <tr>
+          <th>us-east-1<small style="display:block;color:var(--muted)">リンク</small></th>
+          <td class="m-mgmtadmin"><span class="role">管理者（リンク）</span>各リージョンで個別に委任管理者を指定する必要がある <b class="mech g">委任</b>。受信分は東京へ <b class="mech a">集約</b></td>
+          <td class="m-mgmtadmin"><span class="role">管理者</span>同上（リージョンごとに指定） <b class="mech g">委任</b> → <b class="mech i">統合</b> → <b class="mech a">集約</b></td>
+          <td class="m-mgmtadmin"><span class="role">組織ビュー</span>グローバル + us-east-1 発（+ us-west-2 バックアップ）を受信</td>
+          <td class="m-route"><b class="mech d">直通</b> Health ルールのみ → SNS us-east-1 → Chatbot / Lambda</td>
+        </tr>
+        <tr class="sep">
+          <th class="acct" rowspan="2">メンバーアカウント<small>dev / prod / …</small></th>
+          <th>東京</th>
+          <td class="m-member"><span class="role">メンバー</span>既存アカウントは<strong>リージョンごとに手動で有効化・標準を選択</strong>（自動有効化は新規アカウントのみ）。finding は管理アカウントへ <b class="mech g">委任</b></td>
+          <td class="m-member"><span class="role">メンバー</span>自動有効化 ALL なら既存も対象。<b class="mech i">統合</b> → <b class="mech g">委任</b></td>
+          <td class="m-member"><span class="role">発生元</span>組織ビュー経由で管理アカウントへ <b class="mech g">委任</b></td>
+          <td class="m-none">置かない</td>
+        </tr>
+        <tr>
+          <th>us-east-1</th>
+          <td class="m-member"><span class="role">メンバー</span>同上（東京とは別に有効化・標準選択が必要）<b class="mech g">委任</b> → <b class="mech a">集約</b></td>
+          <td class="m-member"><span class="role">メンバー</span>同上 <b class="mech i">統合</b> → <b class="mech g">委任</b></td>
+          <td class="m-member"><span class="role">発生元</span>同上 <b class="mech g">委任</b></td>
+          <td class="m-none">置かない</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+    <div class="grid2" style="margin-top:14px;">
+      <div class="card"><h3>推奨形との差</h3><ul>
+        <li>中央設定が使えない → 設定ポリシー無し。メンバーの有効化・標準・コントロールはアカウント × リージョンごとに手作業で揃え、ドリフトを自分で検知する</li>
+        <li>委任管理者の指定もリージョンごと（中央設定なら home + linked に自動展開される）</li>
+        <li>Health だけは差が無い。組織ビューは管理アカウントの機能なので、むしろ委任の手間が省ける</li>
+      </ul></div>
+      <div class="card"><h3>やるなら守ること</h3><ul>
+        <li>管理アカウントに置くのは Hub / GuardDuty 管理者と通知経路（SNS / Chatbot / Lambda）まで。他のワークロードは一切載せない</li>
+        <li>SCP が効かないため、IAM ポリシーと MFA で通知経路と Agent Space ロールへのアクセスを絞る。調査 Lambda のロールはメンバーへの読み取りに限定する</li>
+        <li>将来アカウントを増やせるようになったら、集約アカウントを分離して委任先を切り替える（GuardDuty / Inspector はメンバーの有効化状態を維持したまま委任先を変更できる）</li>
+      </ul></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>ケース 3: 1 メンバーアカウント（委任なし）</h2>
+    <p style="margin:0 0 12px; color:var(--muted); font-size:14px; max-width:80ch;">委任管理者にはなれず、アカウントも増やせない前提。使える道具は「Security Hub のリージョン集約」「Hub への統合」「各リージョンの直通ルール」の 3 つだけなので、それをどう配置するかが論点になる。examples/security-notification-topology/case3-single-member がこの表の実装。</p>
+    <div class="wrap">
+    <table class="matrix amx">
+      <thead><tr><th style="text-align:left">アカウント</th><th style="text-align:left">リージョン</th><th>Security Hub</th><th>GuardDuty / Inspector</th><th>AWS Health</th><th>通知経路（EventBridge → SNS）</th></tr></thead>
+      <tbody>
+        <tr>
+          <th class="acct" rowspan="3">メンバーアカウント<small>委任なし・単独運用</small></th>
+          <th>東京<small style="display:block;color:var(--muted)">ホーム</small></th>
+          <td class="m-admin"><span class="role">ホーム</span>FSBP を有効化。他リージョンからの <b class="mech a">集約</b> を受ける。グローバルリソースのコントロール（IAM.* など）はここだけで評価し、他リージョンでは無効化</td>
+          <td class="m-admin"><span class="role">全機能有効</span>Runtime / S3 Malware などワークロード依存の保護はワークロードがあるリージョンだけ。Hub へ <b class="mech i">統合</b>、ネイティブルールは置かない</td>
+          <td class="m-admin"><span class="role">直通</span>Event + Abuse の 2 種を <b class="mech d">直通</b> で SNS 東京へ</td>
+          <td class="m-route"><b class="mech d">直通</b> Hub ルール（GuardDuty 全件 / コントロール HIGH+）+ Health ルール → SNS 東京 → Chatbot（+ 任意の Lambda）。EventBridge ターゲットに DLQ。ルールを「SNS に publish してから Workflow を NOTIFIED にする」Lambda 経由にすると再通知が止まる</td>
+        </tr>
+        <tr>
+          <th>us-east-1<small style="display:block;color:var(--muted)">リンク</small></th>
+          <td class="m-admin"><span class="role">リンク</span>CloudFront / IAM などグローバル系の finding 用。東京へ <b class="mech a">集約</b>。ルールは置かない</td>
+          <td class="m-admin"><span class="role">基礎データソースのみ</span>ワークロードが無いので Runtime / Malware 系は不要。Hub へ <b class="mech i">統合</b></td>
+          <td class="m-admin"><span class="role">直通</span>グローバルサービス + us-east-1 発 + us-west-2 バックアップを <b class="mech d">直通</b> で SNS us-east-1 へ</td>
+          <td class="m-route"><b class="mech d">直通</b> Health ルールのみ → SNS us-east-1 → Chatbot（+ 任意の Lambda、クロスリージョン購読）。CloudFront のアラームもこのリージョンに置く</td>
+        </tr>
+        <tr>
+          <th>他リージョン<small style="display:block;color:var(--muted)">ワークロード無し</small></th>
+          <td class="m-admin"><span class="role">リンクに追加</span>集約リンクを全リージョンに広げる（ALL_REGIONS、将来のリージョンも自動）。グローバルリソース系コントロールは無効化して重複 finding を消す。使わないリージョンは無効化して費用を絞る選択も可</td>
+          <td class="m-admin"><span class="role">基礎データソースのみ</span>GuardDuty は不正利用検知のため全リージョンで有効にし、Runtime / Malware / RDS / Lambda 保護は OFF にして費用を絞る。Hub へ <b class="mech i">統合</b> → 東京へ <b class="mech a">集約</b>。Inspector はスキャン対象が無いので無効化</td>
+          <td class="m-admin"><span class="role">バックアップ配信で代替</span>リソースが無いのでリージョン固有イベントは稀。us-west-2 に 1 本だけ直通ルールを置けば、全リージョンのアカウント固有イベントを 1 か所で受けられる（public イベントは含まれない）</td>
+          <td class="m-none">置かない<small style="display:block">（us-west-2 の Health ルールだけ例外。communicationId で東京 / us-east-1 との重複排除）</small></td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+    <div class="grid2" style="margin-top:14px;">
+      <div class="card"><h3>集約の軸</h3><ul>
+        <li>アカウント横断は無いので、リージョン横断は Security Hub の集約 1 本に寄せる。GuardDuty / Inspector は統合で Hub に乗せ、ネイティブルールは持たない</li>
+        <li>Health だけは集約機能が無い。東京・us-east-1 の直通に加え、他リージョンを拾うなら us-west-2 のバックアップ配信を使う</li>
+        <li>SNS トピックはルールを置くリージョンごとに 1 本（東京・us-east-1、他リージョン分を拾う場合は us-west-2）。購読者は Chatbot と Lambda の 2 つで固定</li>
+      </ul></div>
+      <div class="card"><h3>通知量の制御</h3><ul>
+        <li>コントロール finding は「失敗の発生ごとに 1 回」にする。ルールを SNS publish → NOTIFIED 更新の Lambda 経由にすれば、再評価のたびの再通知が止まる（PASSED → FAILED で NEW に戻るので再発は拾える）</li>
+        <li>グローバルリソースのコントロールをホーム以外で無効化し、17 リージョン分の複製 finding を消す</li>
+        <li>受容済みのリスクは Security Hub で SUPPRESSED にする。除外条件は EventBridge パターンではなく Security Hub 側に持たせる</li>
+      </ul></div>
+      <div class="card"><h3>配信の信頼性</h3><ul>
+        <li>EventBridge → SNS のターゲットに DLQ（SQS）を付け、失敗イベントの本体を 14 日残す。必要なら EventBridge アーカイブでリプレイ</li>
+        <li>SNS の配信ステータスログを有効化し、Chatbot への失敗を CloudWatch Logs に残す</li>
+        <li>Lambda の DLQ 滞留にアラームを付ける（Lambda 経路が止まっても Chatbot 経路は生きるが、止まったことに気づく手段が要る）</li>
+      </ul></div>
+      <div class="card"><h3>管理の一貫性</h3><ul>
+        <li>全リージョンの有効化状態を Terraform で管理する。provider は module の for_each に渡せないので、リージョンごとに module ブロックを明示する</li>
+        <li>標準は FSBP に統一する。旧版 CIS を併用すると二重評価と旧版コントロールの通知が増える</li>
+        <li>将来アカウントが増えて委任管理者になれるなら、上の「推奨形」に移行する。その際もホーム = 東京、リンク = us-east-1 の設計は引き継げる</li>
+      </ul></div>
+    </div>
+  </section>
+
+  <footer>examples/security-notification-topology に各ケースの Terraform 実装がある。用語と仕様の根拠は security-notification-topology.md を参照。</footer>
+</main>

@@ -1,0 +1,6 @@
+service_name     = "myorg"
+environment      = "security"
+home_region      = "ap-northeast-1"
+linked_regions   = ["us-east-1"]
+slack_team_id    = "T0XXXXXXX"
+slack_channel_id = "C0XXXXXXXXX"
