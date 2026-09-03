@@ -14,7 +14,9 @@ Build a configuration that enables GuardDuty across target regions within an AWS
 | **delegated administrator** | The GuardDuty delegated administrator account. Manages Detectors, members, and Organization configuration. |
 | **aggregation region** | The region where EventBridge / SNS notifications are aggregated. |
 
-> **Assumption**: This specification assumes the management account also serves as the GuardDuty delegated administrator. If delegating to a separate account, you will need a separate design with distinct providers for the management account and delegated admin account (via `assume_role`).
+> **Assumption**: This specification assumes the management account also serves as the GuardDuty delegated administrator. AWS documents this as **not recommended** (least privilege): prefer a dedicated security account as the delegated administrator. In that design only `aws_guardduty_organization_admin_account` runs under the management-account provider; detectors, members and organization configuration run under the delegated-administrator provider (`assume_role`), one provider alias per account and region.
+>
+> **Notification path**: If Security Hub is enabled, prefer [SecurityHub Finding Aggregator](securityhub-finding-aggregator.md) for notifications and skip the notification section below. Running both paths notifies every finding twice, because GuardDuty also imports all findings into Security Hub.
 
 ---
 
@@ -129,7 +131,7 @@ resource "aws_guardduty_detector" "this" {
 # Define each feature individually via aws_guardduty_detector_feature:
 #   S3_DATA_EVENTS          → ENABLED
 #   EKS_AUDIT_LOGS          → ENABLED
-#   EBS_MALWARE_PROTECTION  → ENABLED
+#   EBS_MALWARE_PROTECTION  → ENABLED   (Malware Protection for EC2. Malware Protection for S3 is a separate per-bucket plan)
 #   RDS_LOGIN_EVENTS        → ENABLED
 #   LAMBDA_NETWORK_LOGS     → ENABLED
 #   EKS_RUNTIME_MONITORING  → DISABLED (additional: EKS_ADDON_MANAGEMENT=DISABLED)
@@ -203,6 +205,7 @@ resource "aws_sns_topic_policy" "guardduty_findings" {
         Principal = { Service = "events.amazonaws.com" }
         Action    = "sns:Publish"
         Resource  = aws_sns_topic.guardduty_findings[0].arn
+        Condition = { StringEquals = { "aws:SourceAccount" = var.delegated_admin_account_id } } # the account whose EventBridge publishes
       }
     ]
   })
@@ -598,9 +601,25 @@ resource "aws_iam_role" "chatbot_guardduty" {
   })
 }
 
-resource "aws_iam_role_policy_attachment" "chatbot_guardduty" {
-  role       = aws_iam_role.chatbot_guardduty.name
-  policy_arn = "arn:aws:iam::aws:policy/ReadOnlyAccess"
+# Permissions from the "Notification permissions" policy in the AWS Chatbot IAM guide. ReadOnlyAccess is far broader than needed.
+resource "aws_iam_role_policy" "chatbot_guardduty" {
+  name = "chatbot-guardduty-findings"
+  role = aws_iam_role.chatbot_guardduty.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:Describe*", "cloudwatch:Get*", "cloudwatch:List*",
+          "logs:Get*", "logs:List*", "logs:Describe*", "logs:StartQuery", "logs:StopQuery", "logs:TestMetricFilter", "logs:FilterLogEvents",
+          "sns:Get*", "sns:List*",
+        ]
+        Resource = "*"
+      }
+    ]
+  })
 }
 
 # --- AWS Chatbot Slack Channel Configuration ---
@@ -611,6 +630,9 @@ resource "aws_chatbot_slack_channel_configuration" "guardduty" {
   slack_team_id      = "<slack_workspace_id>"
   sns_topic_arns     = [module.guardduty_<aggregation_region>.sns_topic_arn]
   logging_level      = "ERROR"
+
+  # Guardrails default to AdministratorAccess when omitted; restrict explicitly.
+  guardrail_policy_arns = ["arn:aws:iam::aws:policy/ReadOnlyAccess"]
 }
 ```
 
@@ -652,6 +674,9 @@ resource "aws_chatbot_slack_channel_configuration" "guardduty" {
 
 7. **`management_account_id` and `delegated_admin_account_id` must match in this spec**
    - This specification assumes the management account serves as the delegated administrator, so both values should be identical. The EventBridge bus policy references `management_account_id` — if it differs from the delegated admin account, cross-region forwarding will break.
+
+8. **Add a dead-letter queue to EventBridge targets**
+   - Without `dead_letter_config` on `aws_cloudwatch_event_target`, an event that cannot be delivered to SNS is dropped after the retry policy (24 hours or 185 attempts by default) and only the `FailedInvocations` metric remains. Attach an SQS queue so the event body can be inspected and re-sent.
 
 ### Terraform Implementation
 

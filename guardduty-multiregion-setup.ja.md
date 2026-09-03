@@ -14,7 +14,9 @@ AWS Organizations 環境において、GuardDuty を対象リージョンで有�
 | **delegated administrator** | GuardDuty の委任管理者アカウント。Detector・メンバー管理・Organization 設定を行う |
 | **集約リージョン** | EventBridge / SNS による通知を集約するリージョン |
 
-> **本仕様の前提**: management account が GuardDuty の delegated administrator を兼任する構成です。delegated administrator を別アカウントにする場合は、management account 用の provider と delegated admin 用の provider（assume_role）を分離する設計が別途必要になります。
+> **本仕様の前提**: management account が GuardDuty の delegated administrator を兼任する構成です。AWS はこの構成を最小権限の観点から**非推奨**としており、専用のセキュリティアカウントを delegated administrator にするのが推奨です。その設計では `aws_guardduty_organization_admin_account` だけを management account の provider で作成し、Detector・メンバー・Organization 設定は delegated administrator の provider（assume_role）で作成します。provider alias はアカウント × リージョンごとに必要です。
+>
+> **通知経路について**: Security Hub を有効にしているなら、通知は [SecurityHub Finding Aggregator](securityhub-finding-aggregator.ja.md) に寄せ、本レシピの通知セクションは省略してください。GuardDuty は全 Finding を Security Hub にも取り込むため、両方の経路を置くと同じ Finding が 2 回通知されます。
 
 ---
 
@@ -129,7 +131,7 @@ resource "aws_guardduty_detector" "this" {
 # 以下の機能を個別に aws_guardduty_detector_feature で定義:
 #   S3_DATA_EVENTS          → ENABLED
 #   EKS_AUDIT_LOGS          → ENABLED
-#   EBS_MALWARE_PROTECTION  → ENABLED
+#   EBS_MALWARE_PROTECTION  → ENABLED   (Malware Protection for EC2。S3 の Malware Protection はバケット単位の別設定)
 #   RDS_LOGIN_EVENTS        → ENABLED
 #   LAMBDA_NETWORK_LOGS     → ENABLED
 #   EKS_RUNTIME_MONITORING  → DISABLED (additional: EKS_ADDON_MANAGEMENT=DISABLED)
@@ -203,6 +205,7 @@ resource "aws_sns_topic_policy" "guardduty_findings" {
         Principal = { Service = "events.amazonaws.com" }
         Action    = "sns:Publish"
         Resource  = aws_sns_topic.guardduty_findings[0].arn
+        Condition = { StringEquals = { "aws:SourceAccount" = var.delegated_admin_account_id } } # EventBridge が発行するアカウント
       }
     ]
   })
@@ -598,9 +601,25 @@ resource "aws_iam_role" "chatbot_guardduty" {
   })
 }
 
-resource "aws_iam_role_policy_attachment" "chatbot_guardduty" {
-  role       = aws_iam_role.chatbot_guardduty.name
-  policy_arn = "arn:aws:iam::aws:policy/ReadOnlyAccess"
+# AWS Chatbot の IAM ガイドにある「通知用権限（Notification permissions）」に準拠。ReadOnlyAccess は過大
+resource "aws_iam_role_policy" "chatbot_guardduty" {
+  name = "chatbot-guardduty-findings"
+  role = aws_iam_role.chatbot_guardduty.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:Describe*", "cloudwatch:Get*", "cloudwatch:List*",
+          "logs:Get*", "logs:List*", "logs:Describe*", "logs:StartQuery", "logs:StopQuery", "logs:TestMetricFilter", "logs:FilterLogEvents",
+          "sns:Get*", "sns:List*",
+        ]
+        Resource = "*"
+      }
+    ]
+  })
 }
 
 # --- AWS Chatbot Slack Channel Configuration ---
@@ -611,6 +630,9 @@ resource "aws_chatbot_slack_channel_configuration" "guardduty" {
   slack_team_id      = "<Slack ワークスペース ID>"
   sns_topic_arns     = [module.guardduty_<aggregation_region>.sns_topic_arn]
   logging_level      = "ERROR"
+
+  # ガードレール未指定時の既定は AdministratorAccess のため、明示的に制限する
+  guardrail_policy_arns = ["arn:aws:iam::aws:policy/ReadOnlyAccess"]
 }
 ```
 
@@ -652,6 +674,9 @@ resource "aws_chatbot_slack_channel_configuration" "guardduty" {
 
 7. **`management_account_id` と `delegated_admin_account_id` は同一前提**
    - 本仕様では management account が delegated administrator を兼任する構成のため、両者は同じ値になる。EventBridge bus policy は `management_account_id` を参照するため、値がずれるとクロスリージョン転送が壊れる点に注意
+
+8. **EventBridge ターゲットにデッドレターキューを付ける**
+   - `aws_cloudwatch_event_target` に `dead_letter_config` が無いと、SNS へ配信できなかったイベントは再試行ポリシー（既定 24 時間または 185 回）の後に破棄され、`FailedInvocations` メトリクスしか残らない。SQS キューを付けてイベント本体を確認・再送できるようにする
 
 ### Terraform 実装の注意
 

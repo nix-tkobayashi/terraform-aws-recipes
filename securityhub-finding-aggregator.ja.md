@@ -176,6 +176,11 @@ resource "aws_cloudwatch_event_rule" "guardduty_findings" {
         Severity = {
           Label = var.severity_labels
         }
+        # Imported イベントは新規だけでなく更新でも発火するため、未対応かつ ACTIVE な Finding だけ通知する
+        Workflow = {
+          Status = ["NEW"]
+        }
+        RecordState = ["ACTIVE"]
       }
     }
   })
@@ -371,11 +376,14 @@ module "guardduty_<region>" {
 1. **Finding Aggregator はメタデータだけでなく Finding 自体をレプリケートする**
    - `linking_mode = "ALL_REGIONS"` を設定すると、全リンクリージョンの Finding が集約リージョンの SecurityHub にレプリケートされる。このレプリケーションにより集約リージョンで `Security Hub Findings - Imported` の EventBridge イベントが発火するため、1 つのルールで全リージョンの Finding を捕捉できる
 
-2. **通知の重複は発生しない**
-   - 集約リージョン自体の Finding はネイティブに SecurityHub に存在し 1 イベントを発火する。他リージョンの Finding はレプリケートされ 1 イベントを発火する。各 Finding につき通知は正確に 1 回
+2. **イベントは「Finding ごとに 1 回」ではなく「インポート・更新ごとに 1 回」**
+   - `Security Hub Findings - Imported` は `BatchImportFindings` / `BatchUpdateFindings` の呼び出しごとに発火する。GuardDuty は同じ Finding に追加の観測があると更新を送り（更新頻度、既定 6 時間でまとめられる）、そのたびにイベントが再発火する。上のパターンは `Workflow.Status = NEW` かつ `RecordState = ACTIVE` に絞っており、対応済みの Finding は落とすが、未対応 Finding の更新は落とさない
+   - Finding ごとに厳密に 1 回だけ通知したい場合は、初回通知後に Workflow を `NOTIFIED` に更新する（EventBridge ターゲットの Lambda から `BatchUpdateFindings`）。この更新自身も Imported イベントを 1 回発火させるので、処理は冪等にする。Compliance が PASSED → FAILED に戻ると Security Hub が `NOTIFIED` を `NEW` に戻すため、再発は拾える
+   - リンク前から存在していた Finding は、次に更新されたときに初めて集約リージョンに複製される
 
 3. **新リージョンは自動的にカバーされる**
    - `ALL_REGIONS` は将来のリージョンも含む。新リージョンで GuardDuty と SecurityHub を有効化すれば、Finding は自動的に集約リージョンに流れる — 追加の EventBridge ルールや転送設定は不要
+   - Aggregator 自体は SecurityHub やオプトインリージョンを有効化しない。GuardDuty を有効にしているリージョンの集合とリンクリージョンの集合を一致させること。リンクしていないリージョンの Finding は通知されない
 
 4. **SecurityHub は各リージョンで有効化が必要**
    - Finding Aggregator は SecurityHub の Finding を集約するのであり、GuardDuty の Finding を直接集約するわけではない。GuardDuty は Finding を SecurityHub に自動インポートするが、そのためには対象リージョンで SecurityHub が有効である必要がある
@@ -385,8 +393,8 @@ module "guardduty_<region>" {
 
 ### Terraform 実装の注意
 
-1. **Finding Aggregator はアカウントにつき 1 つのグローバルリソース**
-   - `aws_securityhub_finding_aggregator` はアカウント内に 1 つしか存在できない。既に設定済み（例: Control Tower による設定）の場合は import で取り込むこと
+1. **Finding Aggregator はアカウントにつき 1 つで、集約（ホーム）リージョンに作成する**
+   - `aws_securityhub_finding_aggregator` はアカウント内に 1 つしか存在できず、集約リージョンの provider で作成する。既に設定済み（例: Control Tower による設定）の場合は import で取り込むこと
 
 2. **既存 Finding Aggregator の import**
    ```hcl
