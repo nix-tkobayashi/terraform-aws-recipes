@@ -176,6 +176,11 @@ resource "aws_cloudwatch_event_rule" "guardduty_findings" {
         Severity = {
           Label = var.severity_labels
         }
+        # Imported events fire on every import and update; notify only active, unreviewed findings
+        Workflow = {
+          Status = ["NEW"]
+        }
+        RecordState = ["ACTIVE"]
       }
     }
   })
@@ -371,11 +376,14 @@ module "guardduty_<region>" {
 1. **Finding Aggregator replicates findings, not just metadata**
    - When `linking_mode = "ALL_REGIONS"` is set, findings from all linked regions are replicated to the aggregation region's SecurityHub. This replication triggers `Security Hub Findings - Imported` EventBridge events in the aggregation region, enabling a single rule to catch findings from all regions.
 
-2. **No duplicate notifications**
-   - Findings from the aggregation region itself are natively in SecurityHub and trigger one event. Findings from other regions are replicated and trigger one event. Each finding produces exactly one notification.
+2. **One event per import or update, not one per finding**
+   - `Security Hub Findings - Imported` fires for every `BatchImportFindings` / `BatchUpdateFindings` call. GuardDuty sends an update whenever a finding gets additional observations (batched at its update frequency, 6 hours by default), and each update fires the event again. The pattern above limits notifications to `Workflow.Status = NEW` and `RecordState = ACTIVE`, which drops reviewed findings but not updates to unreviewed ones.
+   - To notify exactly once per finding, set the workflow status to `NOTIFIED` after the first notification (an EventBridge target Lambda calling `BatchUpdateFindings`). The status change itself emits one more Imported event, so keep that step idempotent. Security Hub resets `NOTIFIED` to `NEW` when compliance goes from PASSED back to FAILED, so recurrences are still caught.
+   - Findings that existed before a region was linked are replicated to the aggregation region only when they are next updated.
 
 3. **New regions are covered automatically**
    - `ALL_REGIONS` includes future regions. When you enable GuardDuty in a new region and SecurityHub is active there, findings automatically flow to the aggregation region — no additional EventBridge rules or forwarding needed.
+   - The aggregator does not enable Security Hub or opt-in regions by itself. Keep the set of regions where GuardDuty is enabled equal to the set of linked regions, or findings in the unlinked regions are never notified.
 
 4. **SecurityHub must be enabled in each region**
    - The Finding Aggregator aggregates SecurityHub findings, not GuardDuty findings directly. GuardDuty auto-imports its findings into SecurityHub, but SecurityHub must be enabled in the region for this to work.
@@ -385,8 +393,8 @@ module "guardduty_<region>" {
 
 ### Terraform Implementation
 
-1. **Finding Aggregator is a single global resource**
-   - Only one `aws_securityhub_finding_aggregator` can exist per account. If already configured (e.g., by Control Tower), import it.
+1. **Finding Aggregator is one per account, created in the aggregation (home) region**
+   - Only one `aws_securityhub_finding_aggregator` can exist per account, and it must be created with the provider for the aggregation region. If already configured (e.g., by Control Tower), import it.
 
 2. **Import command for existing Finding Aggregator**
    ```hcl

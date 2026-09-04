@@ -4,19 +4,21 @@
 
 ## Overview
 
-Build a notification pipeline that uses the **EventBridge us-west-2 aggregation** (available since November 2025) to capture all AWS Health events across all regions with a single rule, then deliver them to Slack via a Knowledge Base–powered AI analysis pipeline.
+Build a notification pipeline that uses the **EventBridge us-west-2 aggregation** (available since November 2025) to capture account-specific AWS Health events from every region of the standard partition with a single rule (public events are not delivered this way, and global-service events go to us-east-1), then deliver them to Slack via a Knowledge Base–powered AI analysis pipeline.
 
 ### Why us-west-2?
 
-Since November 2025, AWS Health dual-publishes all events to **us-west-2** in addition to the impacted region. A single EventBridge rule in us-west-2 captures Health events from every region — no per-region rules or cross-region forwarding needed.
+AWS Health delivers each event to the impacted region and to a backup region. In the standard partition, **us-west-2** is the backup region for every other region (us-east-1 is the backup for us-west-2). A single EventBridge rule in us-west-2 therefore captures **account-specific** Health events from every region — no per-region rules or cross-region forwarding needed.
+
+Two limits apply: **public events** (service-wide issues shown on the AWS Health Dashboard) are not delivered through this path, and **global-service events** (IAM, Route 53, CloudFront, billing) are published to us-east-1 — add a rule there if you need them.
 
 ### Comparison with Other Approaches
 
 | Approach | Cross-Region | All Event Types | Real-Time | Complexity |
 |---|---|---|---|---|
-| **EventBridge us-west-2 (this recipe)** | **All regions** | **All types** | **Yes** | **Low** |
+| **EventBridge us-west-2 (this recipe)** | **All regions (account-specific events)** | **All categories** | **Yes** | **Low** |
 | SecurityHub Finding Aggregator | All regions | Security-only | Yes | Medium |
-| Health Organizational View | API/Console only | All types | Dashboard only | Low |
+| Health Organizational View | All accounts (single EventBridge feed in the management / delegated administrator account) | All categories | Yes | Low |
 | AWS Health Aware (AHA) | All regions | All types | Polling (delayed) | High |
 
 > **Note**: SecurityHub only receives *security-related* Health events. Operational events (maintenance, service degradation, etc.) are NOT sent to SecurityHub. This recipe captures all event types.
@@ -25,9 +27,9 @@ Since November 2025, AWS Health dual-publishes all events to **us-west-2** in ad
 
 | Term | Meaning |
 |---|---|
-| **aggregation region** | us-west-2 — where the EventBridge rule captures all Health events |
+| **aggregation region** | us-west-2 — where a single EventBridge rule captures account-specific Health events from all regions (backup delivery) |
 | **processing region** | The region where Lambda, Bedrock KB, DynamoDB, and Scheduler run (e.g., `ap-northeast-1`) |
-| **eventTypeCategory** | Health event classification: `issue`, `accountNotification`, `scheduledChange` |
+| **eventTypeCategory** | Health event classification: `issue`, `accountNotification`, `scheduledChange`, `investigation` |
 
 ---
 
@@ -36,7 +38,7 @@ Since November 2025, AWS Health dual-publishes all events to **us-west-2** in ad
 ```
 [All Regions]
   AWS Health Event
-      ↓ (automatically dual-published to us-west-2 since Nov 2025)
+      ↓ (also delivered to the backup region us-west-2)
 
 [us-west-2]
   EventBridge Rule (source=aws.health)
@@ -62,7 +64,7 @@ Since November 2025, AWS Health dual-publishes all events to **us-west-2** in ad
 
 | Item | Description |
 |---|---|
-| **AWS Organizations** | Organizational Health view enabled for cross-account event visibility |
+| **AWS Organizations** (multi-account only) | Organizational view enabled in the management account so that one account receives the Health feed for all accounts. Console enablement works on every support plan; the CLI/API requires Business, Enterprise On-Ramp or Enterprise Support. No Terraform resource exists — treat it as a manual prerequisite |
 | **Processing region** | Region for Lambda/KB resources (e.g., `ap-northeast-1`) |
 | **Slack webhook** | Slack Incoming Webhook URL for notifications |
 | **Terraform providers** | Provider aliases for us-west-2 (aggregation) and processing region |
@@ -75,6 +77,7 @@ Since November 2025, AWS Health dual-publishes all events to **us-west-2** in ad
 | eventTypeCategory | statusCode | Tier | Notification |
 |---|---|---|---|
 | `issue` | `open` | IMMEDIATE | Instant AI analysis + Slack |
+| `investigation` | any | IMMEDIATE | Instant AI analysis + Slack (AWS is investigating activity in your account) |
 | `issue` | `closed` | DAILY | Daily digest |
 | `accountNotification` | any | HOURLY | Hourly digest |
 | `scheduledChange` | `upcoming` | DAILY | Daily digest (10:00 JST) |
@@ -119,15 +122,15 @@ terraform/
 The module requires **two providers**: the default provider for the processing region and a `us_west_2` alias for the aggregation region.
 
 ```hcl
-# --- us-west-2: Capture all Health events ---
+# --- us-west-2: Capture account-specific Health events from all regions ---
 resource "aws_cloudwatch_event_rule" "health_all_regions" {
   provider    = aws.us_west_2
   name        = "${var.project_name}-health-all-regions"
-  description = "Capture all AWS Health events from all regions via us-west-2 aggregation"
+  description = "Capture account-specific AWS Health events from all regions via the us-west-2 backup delivery"
 
   event_pattern = jsonencode({
     source      = ["aws.health"]
-    detail-type = ["AWS Health Event"]
+    detail-type = ["AWS Health Event", "AWS Health Abuse Event"]
   })
 }
 
@@ -191,7 +194,7 @@ resource "aws_cloudwatch_event_rule" "health_to_sns" {
   event_bus_name = aws_cloudwatch_event_bus.health_events.name
   event_pattern = jsonencode({
     source      = ["aws.health"]
-    detail-type = ["AWS Health Event"]
+    detail-type = ["AWS Health Event", "AWS Health Abuse Event"]
   })
 }
 
@@ -235,13 +238,16 @@ def parse_health_event(message_str):
         "service": detail.get("service", ""),
         "event_type_code": detail.get("eventTypeCode", ""),
         "event_type_category": detail.get("eventTypeCategory", ""),
-        "region": detail.get("region", ""),
+        "region": detail.get("eventRegion", ""),          # impacted region ("region" at the top level is the delivery region)
         "status_code": detail.get("statusCode", ""),
         "start_time": detail.get("startTime", ""),
         "end_time": detail.get("endTime", ""),
         "description": detail.get("eventDescription", [{}])[0].get("latestDescription", ""),
         "affected_entities": detail.get("affectedEntities", []),
-        "account_id": event.get("account", ""),
+        "account_id": detail.get("affectedAccount", event.get("account", "")),  # top-level "account" is the receiving account under organizational view
+        "communication_id": detail.get("communicationId", ""),
+        "page": detail.get("page", "1"),
+        "total_pages": detail.get("totalPages", "1"),
     }
 ```
 
@@ -251,6 +257,8 @@ def classify_health_event(event_info):
     category = event_info["event_type_category"]
     status = event_info["status_code"]
     if category == "issue" and status == "open":
+        return "IMMEDIATE"
+    elif category == "investigation":
         return "IMMEDIATE"
     elif category == "accountNotification":
         return "HOURLY"
@@ -287,25 +295,27 @@ module "health_knowledge_analysis" {
 
 ### AWS Health Behavior
 
-1. **us-west-2 receives ALL regional events since November 2025**
-   - You no longer need per-region EventBridge rules for Health events
-   - us-east-1 serves as a backup for us-west-2, and us-west-2 serves as a backup for all other regions
+1. **us-west-2 receives account-specific events from all regions (backup delivery)**
+   - You no longer need per-region EventBridge rules for account-specific Health events
+   - us-west-2 is the backup region for all other regions; us-east-1 is the backup for us-west-2 only
+   - Public events are not included. If you need them, keep a rule in each region where you have resources
+   - Backup copies carry `detail.backupEvent = true` — filter or deduplicate if the same account also has per-region rules
 
 2. **Global events (IAM, Route53, CloudFront) are published to us-east-1**
    - For complete coverage, add a secondary rule in us-east-1 for global service events
-   - Or rely on us-west-2 which also receives them as backup
+   - us-west-2 does not receive them: us-east-1 is the backup for us-west-2, not the other way round
 
 3. **SecurityHub only receives security-related Health events**
    - Operational events (maintenance, deprecation, service issues) bypass SecurityHub
    - This recipe captures ALL event types via direct EventBridge integration
 
-4. **Health Organizational View is complementary**
-   - Enable it for dashboard visibility, but it does not emit EventBridge events
-   - Enable via CLI: `aws health enable-health-service-access-for-organization --region us-east-1`
+4. **Health organizational view aggregates accounts, not regions**
+   - When enabled in the management account (optionally delegated to a member account), that account receives a single EventBridge feed of Health events for every account in the organization. Combine it with the us-west-2 rule in that account for multi-account, multi-region coverage
+   - Console enablement works on every support plan. The CLI/API (`aws health enable-health-service-access-for-organization --region us-east-1`) requires Business, Enterprise On-Ramp or Enterprise Support. There is no Terraform resource for it
 
 ### Event Deduplication
 
-- Health events have a unique `eventArn` — use this as the DynamoDB partition key
+- `eventArn` is not unique across accounts or regions. Key event state on `affectedAccount` + `eventArn`, and drop duplicate deliveries (backup copies, retries) on `affectedAccount` + `communicationId`, which also carries the page number for paginated events
 - Events may be updated (statusCode changes from `upcoming` → `open` → `closed`)
 - Use conditional UpdateItem to keep the latest version, similar to GuardDuty finding updates
 
